@@ -145,8 +145,8 @@ test-clean: ## Remove left-over/stopped orphaned containers of the test image (i
 	done; \
 	echo "Pruned stopped orphaned $(TEST_IMG) containers."
 
-test-unit: ## Hermetic unit tests (containerized)
-	$(TEST_RUN) python -m pytest tests/test_llama_ai.py -p no:cacheprovider -q
+test-unit: ## Hermetic unit tests (containerized) — includes the lint regression test
+	$(TEST_RUN) python -m pytest tests/test_llama_ai.py tests/test_lint_linefeeds.py -p no:cacheprovider -q
 
 test-install: ## Host install tests (containerized) — skips cleanly without artifacts
 	$(TEST_RUN) python -m pytest tests/test_install.py -p no:cacheprovider -q
@@ -163,7 +163,7 @@ test-health: ## End-to-end CPU health check: ensure model, then tiny model answe
 	$(TEST_RUN) sh -c 'python scripts/download_test_model.py && python -m pytest tests/test_health.py -p no:cacheprovider -q -s'
 
 test: ## Full fast suite (unit + install; containerized)
-	$(TEST_RUN) python -m pytest tests/test_llama_ai.py tests/test_install.py -p no:cacheprovider -q
+	$(TEST_RUN) python -m pytest tests/test_llama_ai.py tests/test_install.py tests/test_lint_linefeeds.py -p no:cacheprovider -q
 
 download-test-model: ## Fetch the lightweight (0.5B Q4 ~340MB) model into container ~/models/Qwen/8GB
 	$(TEST_RUN) python scripts/download_test_model.py
