@@ -148,13 +148,24 @@ def process_merge_gate(prs) -> None:
 
 # ------------------------------------------------------------------ spawner
 def issue_has_pr(issue_num: int) -> bool:
+    """True if some open PR's body CLOSES this issue (Closes/Fixes/Resolves #N).
+
+    Uses a deliberate closing keyword, NOT a bare `#N` substring — a PR may mention
+    another issue in prose (e.g. "the issue #9 guard") without closing it, and a
+    substring match would wrongly suppress spawning a worker for that issue.
+    """
+    import re
+
     prs = api("/pulls?state=open&per_page=100")
     if not isinstance(prs, list):
         return False
+    closes_re = re.compile(r"(?i)(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)\s*#\s*(\d+)")
     for pr in prs:
         body = pr.get("body") or ""
-        if str(issue_num) in body:
-            return True
+        for m in closes_re.finditer(body):
+            if int(m.group(2)) == issue_num:
+                return True
+    # Fall back to the title: `Closes #N`-style is not the norm; require keyword too.
     return False
 
 
