@@ -235,8 +235,10 @@ def resolve_llama_server():
     Resolution order:
       1. $LLAMA_SERVER env var (explicit override; must be an executable file)
       2. `llama-server` found on PATH
+      3. `~/bin/llama-server` (the symlink `make install` creates) — covers
+         non-interactive shells where ~/bin is not on PATH
 
-    If neither yields a usable binary, raise SystemExit with a clear, actionable
+    If none yields a usable binary, raise SystemExit with a clear, actionable
     error so the launcher terminates instead of silently failing.
     """
     env = (os.environ.get("LLAMA_SERVER") or "").strip()
@@ -250,6 +252,10 @@ def resolve_llama_server():
     found = shutil.which("llama-server")
     if found:
         return found
+    # Fall back to ~/bin/llama-server (installed/symlinked by `make install`).
+    home_bin = os.path.join(os.path.expanduser("~"), "bin", "llama-server")
+    if os.path.isfile(home_bin) and os.access(home_bin, os.X_OK):
+        return home_bin
     raise SystemExit(
         "[ERROR] llama-server binary not found on PATH.\n"
         "        Make llama.cpp's llama-server reachable as 'llama-server', e.g.:\n"

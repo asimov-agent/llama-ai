@@ -201,13 +201,31 @@ def test_resolve_from_path(monkeypatch, tmp_path):
     assert llama_ai.resolve_llama_server() == str(fake)
 
 
-def test_resolve_missing_raises_systemexit(monkeypatch):
+def test_resolve_missing_raises_systemexit(monkeypatch, tmp_path):
     monkeypatch.delenv("LLAMA_SERVER", raising=False)
     monkeypatch.setattr(llama_ai.shutil, "which", lambda _: None)
+    # Redirect the ~/bin/llama-server fallback to an empty tmp dir so the
+    # "missing" path is genuinely exercised even on hosts with make-installed
+    # ~/bin/llama-server symlinks.
+    empty = tmp_path / "fakehome"
+    empty.mkdir()
+    monkeypatch.setattr(llama_ai.os.path, "expanduser", lambda _: str(empty))
     with pytest.raises(SystemExit) as e:
         llama_ai.resolve_llama_server()
     assert e.value.code != 0
     assert "llama-server" in str(e.value)
+
+
+def test_resolve_falls_back_to_home_bin(monkeypatch, tmp_path):
+    monkeypatch.delenv("LLAMA_SERVER", raising=False)
+    monkeypatch.setattr(llama_ai.shutil, "which", lambda _: None)
+    home = tmp_path / "fakehome"
+    srv = home / "bin" / "llama-server"
+    srv.parent.mkdir(parents=True)
+    srv.write_bytes(b"binary")
+    srv.chmod(0o755)
+    monkeypatch.setattr(llama_ai.os.path, "expanduser", lambda _: str(home))
+    assert llama_ai.resolve_llama_server() == str(srv)
 
 
 def test_resolve_bad_env_raises_systemexit(monkeypatch, tmp_path):
