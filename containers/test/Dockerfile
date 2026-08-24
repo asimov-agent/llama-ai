@@ -36,9 +36,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN git clone --depth 1 https://github.com/ggerganov/llama.cpp.git /tmp/llama.cpp \
     && cmake -S /tmp/llama.cpp -B /tmp/llama.cpp/build -DCMAKE_BUILD_TYPE=Release \
         -DLLAMA_CUBLAS=OFF -DGGML_CUDA=OFF -DLLAMA_METAL=OFF -DGGML_METAL=OFF \
-        -DLLAMA_CURL=OFF \
+        -DLLAMA_CURL=OFF -DLLAMA_BUILD_SHARED=ON \
     && cmake --build /tmp/llama.cpp/build --config Release -j2 --target llama-server \
     && install -m 0755 /tmp/llama.cpp/build/bin/llama-server /usr/local/bin/llama-server \
+    # Install ALL runtime shared libraries the server links against
+    # (libllama-server-impl, libllama-common, libllama, libggml...); running only
+    # `install` on the binary is not enough or llama-server fails with
+    # "cannot open shared object file".
+    && for lib in /tmp/llama.cpp/build/bin/lib*.so*; do [ -f "$lib" ] && install -m 0755 "$lib" /usr/local/lib/; done \
+    && ldconfig \
     && rm -rf /tmp/llama.cpp
 
 WORKDIR /repo
