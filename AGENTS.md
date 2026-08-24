@@ -163,8 +163,16 @@ launches a one-shot session:
   has a branch+PR, work new issues in worktrees. Keep the prompt and this section
   in sync.
 - Each run is a fresh `project-manager` session (no memory of prior runs); it
-  re-derives state from the repo + GitHub every run. Output appends to
-  `.watchloop/watchloop.log` — inspect via `tail`/`grep 'WATCH-LOOP SUMMARY'`.
+  re-derives state from the repo + GitHub every run. The crontab appends the whole
+  run transcript to `.watchloop/watchloop.log` — inspect via `tail`/`grep
+  'WATCH-LOOP SUMMARY'`.
+- **Per-branch logs (never corrupted, one per PR):** in addition to the run
+  transcript, the watch-loop agent maintains a DEDICATED log per feature branch at
+  `.watchloop/logs/<branch>.log` (e.g. `.watchloop/logs/feat-watchloop-drive-issue.log`).
+  It appends that branch's progress as it works (worktree created, OpenSpec files,
+  tasks ticked, validation results, commit SHAs, push, PR number/URL). Parallel
+  worktrees/issues therefore each have their own clean log and never overwrite or
+  interleave each other's — read a specific PR's history from its own log file.
 - To view or edit: `crontab -l` / `crontab -e`. If you ever re-create an in-process
   Hermes cron job for this, do NOT — it would reintroduce the 3-min kill.
 
