@@ -75,13 +75,20 @@ protection (direct pushes to `main` are not allowed for new work).
 Never report a change done without running the loop:
 
 ```bash
-make loop            # runs: test-unit -> test-install -> test -> openspec-validate
+make loop            # runs: download-test-model -> test-unit -> test-install
+                     #      -> test-health -> test -> openspec-validate
 # or the explicit runner:
 python3 scripts/loop_harness.py
 ```
 
-- `scripts/loop_harness.py` runs the stages in a fixed order and **fails closed**
-  (any failed stage → non-zero exit even if later stages run and pass).
+- `scripts/loop_harness.py` runs the six stages in a fixed order and **fails
+  closed** (any failed stage → non-zero exit even if later stages run and pass).
+- **`health` stage (`make test-health`) is mandatory and end-to-end real:** it
+  launches the installed `~/bin/llama-ai` with a lightweight model
+  (`~/models/Qwen/8GB/qwen2.5-0.5b-instruct-q4_0.gguf`, auto-fetched by
+  `make download-test-model`), waits for `/health`, POSTs `"hi"` to
+  `/v1/chat/completions`, and asserts a real text reply. This proves the host
+  install serves a model from ~/bin.
 - The hermetic gates (`make test-unit`) need no external dependency and MUST be
   green before any "done" claim.
 - If the full loop can't complete, still run `make test-unit` + `make
@@ -90,14 +97,23 @@ python3 scripts/loop_harness.py
 
 ## Makefile targets (source of truth)
 
+Each verification step is an independent target; `make loop`/`loop-harness`
+chains them all.
+
 - `make install` — build gguf venv, write `~/bin/llama-ai` launcher, symlink
   `~/bin/llama_ai.py` + `~/bin/llama-server`, smoke-test (needs `~/models`).
 - `make uninstall` — remove launcher + symlinks (keeps venv).
 - `make venv-install` / `make -C tools venv-install` — build the gguf venv.
-- `make test` — full pytest suite under the venv python (unit + install).
+- `make download-test-model` — fetch the lightweight health-check model
+  (`Qwen/Qwen2.5-0.5B-Instruct-GGUF` q4_0, ~340MB) into `~/models/Qwen/8GB` (idempotent).
 - `make test-unit` — hermetic unit tests only (no `~/bin`/`~/models` needed).
 - `make test-install` — host install tests (verify installed launcher runs a model).
-- `make loop` / `make loop-harness` — run `scripts/loop_harness.py`.
+- `make test-health` — **end-to-end**: launch the tiny model from `~/bin`, answer
+  `"hi"` on `/v1/chat/completions`, assert a healthy reply.
+- `make test` — fast suite (unit + install; health excluded from `test` — run
+  `test-health` in the chain).
+- `make loop` / `make loop-harness` — run the chained `scripts/loop_harness.py`.
+- `make chained` — run each verification step explicitly in sequence, fail-fast.
 - `make generate-requirements` — recompile `tools/requirements.in` →
   `tools/requirements.txt` (container or venv pip-compile).
 - `make openspec-image|new|validate|status|shell` — Dockerized OpenSpec CLI.

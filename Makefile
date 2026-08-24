@@ -30,7 +30,8 @@ LLAMA_SERVER_BIN ?= $(HOME)/repository/git/llama.cpp/build/bin/llama-server
 
 .PHONY: all install venv-install link uninstall smoke list version help \
 	openspec-image openspec-new openspec-validate openspec-status openspec-shell \
-	test test-unit test-install loop loop-harness
+	test test-unit test-install test-health download-test-model \
+	loop loop-harness chained
 
 # ---- container runtime (nerdctl preferred, docker fallback) --------------
 RUNTIME ?= nerdctl
@@ -117,12 +118,23 @@ test-unit: ## Hermetic unit tests for llama_ai.py (no ~/bin/~/models needed)
 test-install: ## Host install tests (verify installed ~/bin/llama-ai runs a model)
 	"$(PY)" -m pytest tests/test_install.py -p no:cacheprovider -q
 
-test: ## Full test suite (unit + install) under the venv python
-	"$(PY)" -m pytest tests -p no:cacheprovider -q
+test-health: ## End-to-end health check: launch tiny model, answer 'hi' on the endpoint
+	"$(PY)" -m pytest tests/test_health.py -p no:cacheprovider -q -s
+
+test: ## Full fast suite (unit + install; health check not included — run test-health separately)
+	"$(PY)" -m pytest tests/test_llama_ai.py tests/test_install.py -p no:cacheprovider -q
+
+download-test-model: ## Fetch the lightweight (0.5B Q4 ~340MB) health-check model into ~/models/Qwen/8GB
+	"$(PY)" scripts/download_test_model.py
 
 loop: loop-harness ## alias
-loop-harness: ## Run the loop runner (test-unit -> test-install -> test -> openspec-validate)
-	$(PY) scripts/loop_harness.py
+loop-harness: ## Loop runner: download-test-model -> unit -> install -> health -> test -> openspec-validate
+	"$(PY)" scripts/loop_harness.py
+
+# Run every verification step explicitly (Makefile-level chain, same order as
+# loop-harness). Fails fast on the first failing step.
+chained: test-unit test-install test-health test openspec-validate
+	@echo "All chain steps completed."
 
 uninstall: ## Remove the launcher + symlinks (leaves the venv)
 	@rm -f "$(LAUNCHER)" "$(BIN)/llama_ai.py" "$(BIN)/llama-server"
@@ -130,5 +142,8 @@ uninstall: ## Remove the launcher + symlinks (leaves the venv)
 	@echo "(venv kept at $(VENV); 'make -C tools clean' to drop requirements.txt)"
 
 help:
-	@echo "Targets: install (venv+launcher+symlink+smoke), venv-install, link, smoke,"
-	@echo "         list, generate-requirements, version, uninstall, help"
+	@echo "Targets:" \
+		"install (venv+launcher+symlink+smoke), venv-install, link, smoke,"
+	@echo "         test-unit, test-install, test-health (endpoint answers 'hi'), test,"
+	@echo "         download-test-model, openspec-validate, openspec-new/status,"
+	@echo "         loop (chained runner), loop-harness, chained, uninstall"
