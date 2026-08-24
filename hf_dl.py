@@ -6,7 +6,7 @@ Reads HF_TOKEN from ~/.zshrc. Append progress to <dest_dir>/<label>.progress.log
 Uses HF_HUB_ENABLE_HF_TRANSFER=1 + HF_HUB_DISABLE_XET=1 for speed.
 Auto-retries on connection drop (rc!=0 while final .gguf absent), resuming the partial.
 """
-import subprocess, sys, os, re, time
+import subprocess, sys, os, re, time, shutil
 
 repo, filename, dest, label = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 
@@ -26,7 +26,11 @@ if tok:
 env["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 env["HF_HUB_DISABLE_XET"] = "1"
 
-cmd = ["/Users/andy/models/hf-env/bin/hf", "download", repo, filename,
+HF_BIN = os.environ.get("HF_BIN") or shutil.which("hf")
+if not HF_BIN or not os.path.isfile(HF_BIN):
+    print(f"[{label}] ERROR: 'hf' CLI not found on PATH (no fallback).", file=sys.stderr)
+    sys.exit(2)
+cmd = [HF_BIN, "download", repo, filename,
        "--local-dir", dest, "--max-workers", "4"]
 final_path = os.path.join(dest, filename)
 MAX_RETRY = 20

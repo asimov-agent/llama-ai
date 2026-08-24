@@ -6,13 +6,14 @@ exits non-zero, the remaining stages still run (to report all failures) but the
 final exit code is non-zero.
 
 Stages (order matters):
-    0. download — ensure the lightweight health-test model exists -> make download-test-model
-    1. lint     — every tracked text file ends with a newline     -> make lint
-    2. unit     — hermetic unit tests                          -> make test-unit
-    3. install  — verify make install artifacts + host run     -> make test-install
-    4. health   — launch tiny model, answer 'hi' on endpoint   -> make test-health
-    5. test     — full fast suite                              -> make test
-    6. openspec — validate the active OpenSpec change          -> make openspec-validate NAME=<active>
+    0. image    — build the containerized test image              -> make test-image
+    1. download — ensure the lightweight health-test model exists -> make download-test-model
+    2. lint     — every tracked text file ends with a newline     -> make lint
+    3. unit     — hermetic unit tests                             -> make test-unit
+    4. install  — verify make install artifacts + host run        -> make test-install
+    5. health   — launch tiny model, answer 'hi' on endpoint      -> make test-health
+    6. test     — full fast suite                                 -> make test
+    7. openspec — validate the active OpenSpec change             -> make openspec-validate NAME=<active>
 
 Usage:
     python3 scripts/loop_harness.py            # auto-detect active change
@@ -30,7 +31,9 @@ REPO = Path(__file__).resolve().parent.parent
 
 # stages: (name, [command parts])
 STAGES = [
-    # 0. ensure the lightweight health-test model is present (idempotent).
+    # 0. build the containerized test image (idempotent; needed by all stages).
+    ("image", ["make", "test-image"]),
+    # 1. ensure the lightweight health-test model is present (idempotent).
     ("download", ["make", "download-test-model"]),
     # linefeed lint: every tracked text file must end with a newline.
     ("lint", ["make", "lint"]),

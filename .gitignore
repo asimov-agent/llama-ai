@@ -5,6 +5,10 @@ __pycache__/
 .eggs/
 build/
 dist/
+
+# Container build-time inputs copied from tools/ (see make test-image)
+containers/test/requirements.txt
+containers/test/requirements-dev.txt
 .coverage
 htmlcov/
 .pytest_cache/
