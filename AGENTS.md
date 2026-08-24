@@ -128,6 +128,27 @@ to paste the comment into chat.
    file → non-zero → job RED; fixed → zero → job GREEN) and confirm the
    re-push triggers CI. Report the actual CI job result, not an assumption.
 
+6. **An APPROVED PR is merged.** When the PR for the current branch is reviewed
+   and **approved** (a reviewer's `APPROVED` review, or an explicit human
+   approval phrase), do NOT leave it sitting open — merge it to `main` once the
+   merge prerequisites hold, and clean up the branch:
+   ```bash
+   # prerequisites first — loop gate green, all jobs on the PR pass, no
+   # unresolved review threads:
+   make loop
+   gh pr checks <N>                       # every job must be green
+   # merge (squash or merge as the repo policy prefers) then delete both branches:
+   gh pr merge <N> --merge --delete-branch
+   git branch -D feat/<branch>           # local clean-up
+   ```
+   Do NOT merge a red PR, a PR with open/unresolved review threads, or a PR whose
+   CI is still running — approval is a green light, not a waiver of the gate.
+   Verify the merge landed on `main` (e.g. `git fetch origin && git log origin/main -1`)
+   and report the merge commit sha. If the reviewer engaged but did NOT approve,
+   keep resolving threads (see above); only a genuine approval triggers the merge.
+   This mirrors the obsidian-timestamp-utility B32 (review-approved squash +
+   finalise): "once a reviewer has approved, the agent may finalise".
+
 ## Loop gate (run before claiming done — B20-equivalent)
 
 Never report a change done without running the loop:
