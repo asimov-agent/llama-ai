@@ -11,8 +11,10 @@ on:
 # containerized test image (python + pytest + CPU llama-server), so CI, the
 # local nerdctl host, and the local loop behave identically.
 #
-# Each stage builds the test image first (cached by the runner), then runs the
-# equivalent `make <stage>`. These jobs are independent and run in parallel.
+# Each stage builds the test image first (cached by the runner), runs the
+# equivalent `make <stage>`, then prunes any orphaned test containers via
+# `make test-clean` ("always removed"). The container is always started by the
+# make target (RUNTIME resolves nerdctl->docker), never invoked directly.
 jobs:
   # ------------------------------------------------------------------
   # lint: linefeed / editorconfig (make lint)
@@ -27,6 +29,8 @@ jobs:
         run: make test-image
       - name: make lint
         run: make lint
+      - name: Prune orphaned test containers
+        run: make test-clean
 
   # ------------------------------------------------------------------
   # unit: hermetic unit tests (make test-unit)
@@ -39,6 +43,8 @@ jobs:
         run: make test-image
       - name: make test-unit
         run: make test-unit
+      - name: Prune orphaned test containers
+        run: make test-clean
 
   # ------------------------------------------------------------------
   # install: host install tests (make test-install) — skips cleanly in container
@@ -51,6 +57,8 @@ jobs:
         run: make test-image
       - name: make test-install
         run: make test-install
+      - name: Prune orphaned test containers
+        run: make test-clean
 
   # ------------------------------------------------------------------
   # openspec: validate the active OpenSpec change (make openspec-validate)
@@ -66,6 +74,8 @@ jobs:
         run: make openspec-image
       - name: make openspec-validate
         run: make openspec-validate NAME=ci-pipeline
+      - name: Prune orphaned test containers
+        run: make test-clean
 
   # ------------------------------------------------------------------
   # cpu-health: Real CPU-only lightweight-LLM check (make test-health).
@@ -81,3 +91,5 @@ jobs:
         run: make test-image
       - name: make test-health (CPU LLM answers "hi")
         run: make test-health
+      - name: Prune orphaned test containers
+        run: make test-clean

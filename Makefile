@@ -34,7 +34,7 @@ LLAMA_SERVER_BIN ?= $(HOME)/repository/git/llama.cpp/build/bin/llama-server
 .PHONY: all install venv-install link uninstall smoke list version help \
 	openspec-image openspec-new openspec-validate openspec-status openspec-shell \
 	test test-unit test-install test-health download-test-model \
-	test-image lint lint-fix loop loop-harness chained
+	test-image test-clean lint lint-fix loop loop-harness chained
 
 # ---- container runtime (nerdctl preferred, docker fallback) --------------
 RUNTIME ?= nerdctl
@@ -127,6 +127,23 @@ test-image: ## Build the containerized test image (copies compiled requirements 
 	@cp tools/requirements.txt tools/requirements-dev.txt containers/test/
 	$(RUNTIME) build -t $(TEST_IMG) containers/test/
 	@echo "Test image built: $(TEST_IMG)"
+
+test-clean: ## Remove left-over/stopped orphaned containers of the test image (interrupted/failed runs)
+	# Docker/nerdctl-agnostic: list all containers referencing the test image
+	# (name format is <random>-test-id), stop+remove ONLY the stopped/left-over
+	# ones -- never kill a currently-running test (e.g. an in-progress health
+	# check). Never uses `--filter ancestor` (docker lacks it).
+	@containers=$$($(RUNTIME) ps -a -q 2>/dev/null); \
+	for c in $$containers; do \
+	  info=$$($(RUNTIME) inspect -f '{{.Image}}' $$c 2>/dev/null || echo ""); \
+	  if printf '%s' "$$info" | grep -q "llama-ai/test"; then \
+	    running=$$($(RUNTIME) inspect -f '{{.Running}}' $$c 2>/dev/null || echo "false"); \
+	    if printf '%s' "$$running" | grep -qi "false"; then \
+	      $(RUNTIME) rm -f $$c 2>/dev/null; \
+	    fi; \
+	  fi; \
+	done; \
+	echo "Pruned stopped orphaned $(TEST_IMG) containers."
 
 test-unit: ## Hermetic unit tests (containerized)
 	$(TEST_RUN) python -m pytest tests/test_llama_ai.py -p no:cacheprovider -q

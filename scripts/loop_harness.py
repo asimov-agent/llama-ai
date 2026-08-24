@@ -14,8 +14,10 @@ Stages (order matters):
     5. health   — launch tiny model, answer 'hi' on endpoint      -> make test-health
     6. test     — full fast suite                                 -> make test
     7. openspec — validate the active OpenSpec change             -> make openspec-validate NAME=<active>
+    8. clean    — remove orphaned test containers                 -> make test-clean
 
-Usage:
+All stages run through make, each in its own `--rm` container (so `download`
+and `health` both fetch the model fresh into the container's /root/models). Usage:
     python3 scripts/loop_harness.py            # auto-detect active change
     python3 scripts/loop_harness.py NAME=<chg> # validate a specific change
     make loop                                  # equivalent wrapper
@@ -47,6 +49,10 @@ STAGES = [
     ("test", ["make", "test"]),
     # openspec validate of the active (or given) change
     ("openspec", ["make", "openspec-validate", "NAME=%s" % os.environ.get("NAME", "llama-ai-tooling")]),
+    # ALWAYS clean up orphaned test containers last (even if earlier stages
+    # failed) so no leftover `llama-ai/test` containers accumulate on the host
+    # or CI runner.
+    ("clean", ["make", "test-clean"]),
 ]
 
 
