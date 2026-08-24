@@ -48,6 +48,25 @@ Rules:
   Conventional Commit message and push it to `origin feat/<branch>` as you go, so
   work never sits uncommitted. Never force-push / rewrite history, never commit
   `.env` or real secrets, and never push directly to `main`.
+- **Every work item's GOAL lives in the GitHub issue; keep it in sync (MANDATORY).**
+  Each work item is driven by a GitHub issue (the *issue file*). The issue's goal
+  and the OpenSpec change created from it must stay in lock-step — they are two
+  faces of the same objective and must never diverge:
+  - When you **change the goal** of a work item (scope, objective, acceptance,
+    the `Why`/`What Changes` of the proposal), you MUST mirror that same change
+    in the **GitHub issue body** AND in the OpenSpec change (`proposal.md`,
+    `specs/**/spec.md`, and `tasks.md`) in the **same commit batch**, so issue,
+    proposal, and task list all describe the same goal.
+  - Treat a drift between the issue and the OpenSpec change as a defect in the
+    agent's workflow: the issue is what a human reviewer reads to understand a
+    PR, and the OpenSpec proposal/spec is the checklist of record — they must not
+    contradict each other.
+  - When starting work, if the issue's goal and the OpenSpec change are out of
+    sync, reconcile them first (update whichever is behind to match the intended
+    goal) before implementing.
+  - If a work request arrives without an issue (e.g. ad-hoc chat), create the
+    GitHub issue as part of converting the request into an OpenSpec change, so
+    every OpenSpec change traces to a GitHub issue that mirrors its goal.
 
 ## Git workflow — feature branch + PR (MANDATORY)
 
