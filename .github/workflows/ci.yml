@@ -1,0 +1,118 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]      # ALL branches
+  pull_request:
+
+# Every verification stage is its own independent job (GitHub Actions runs
+# jobs in parallel by default). Each job drives a Makefile target — the SAME
+# commands that `make loop` runs locally — so CI and local loops are identical.
+jobs:
+  # ------------------------------------------------------------------
+  # lint: linefeed / editorconfig (make lint) — fail closed
+  # ------------------------------------------------------------------
+  lint:
+    name: lint (linefeed / editorconfig)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: make lint
+        run: make lint
+
+  # ------------------------------------------------------------------
+  # unit: hermetic unit tests (make test-unit)
+  # ------------------------------------------------------------------
+  unit:
+    name: unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Install runtime + dev deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r tools/requirements.txt
+          pip install -r tools/requirements-dev.txt
+      - name: make test-unit
+        run: make test-unit
+
+  # ------------------------------------------------------------------
+  # install: host install tests (make test-install)
+  # ------------------------------------------------------------------
+  install:
+    name: install + integration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r tools/requirements.txt
+          pip install -r tools/requirements-dev.txt
+      - name: make test-install
+        run: make test-install
+
+  # ------------------------------------------------------------------
+  # openspec: validate the active OpenSpec change (make openspec-validate)
+  # ------------------------------------------------------------------
+  openspec:
+    name: openspec validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: make openspec-validate
+        run: make openspec-validate NAME=ci-pipeline
+
+  # ------------------------------------------------------------------
+  # cpu-health: REAL CPU-only lightweight-LLM health check.
+  # Runs `make download-test-model` (stores the tiny Q4 model into
+  # ~/models/Qwen/8GB/) then `make test-health`, which launches it, waits
+  # for /health, POSTs "hi", and asserts a real completion. NO GPU — the
+  # runner strips GPU, and `test-health` uses --n-gpu-layers 0.
+  # ------------------------------------------------------------------
+  cpu-health:
+    name: cpu-health (lightweight CPU LLM)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Install python deps (gguf reader)
+        run: python -m pip install --upgrade pip && pip install -r tools/requirements.txt
+      - name: Build llama-server in CPU-only mode
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake git
+          git clone --depth 1 https://github.com/ggerganov/llama.cpp.git /tmp/llama.cpp
+          cd /tmp/llama.cpp
+          # CPU-only: explicitly disable GPU backends
+          cmake -B build -DCMAKE_BUILD_TYPE=Release \
+                -DLLAMA_CUBLAS=OFF -DGGML_CUDA=OFF -DLLAMA_METAL=OFF -DGGML_METAL=OFF
+          cmake --build build --config Release -j2 --target llama-server
+          ./build/bin/llama-server --version
+      - name: make download-test-model (-> ~/models/Qwen/8GB)
+        run: make download-test-model
+      - name: make test-health (CPU, answers "hi")
+        run: make test-health
+        env:
+          LLAMA_SERVER: /tmp/llama.cpp/build/bin/llama-server
