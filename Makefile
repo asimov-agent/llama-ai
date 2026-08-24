@@ -31,7 +31,7 @@ LLAMA_SERVER_BIN ?= $(HOME)/repository/git/llama.cpp/build/bin/llama-server
 .PHONY: all install venv-install link uninstall smoke list version help \
 	openspec-image openspec-new openspec-validate openspec-status openspec-shell \
 	test test-unit test-install test-health download-test-model \
-	loop loop-harness chained
+	lint lint-fix loop loop-harness chained
 
 # ---- container runtime (nerdctl preferred, docker fallback) --------------
 RUNTIME ?= nerdctl
@@ -126,6 +126,12 @@ test: ## Full fast suite (unit + install; health check not included — run test
 
 download-test-model: ## Fetch the lightweight (0.5B Q4 ~340MB) health-check model into ~/models/Qwen/8GB
 	"$(PY)" scripts/download_test_model.py
+
+lint: ## Linefeed lint: fail closed if any tracked text file lacks a trailing newline
+	"$(PY)" scripts/lint_linefeeds.py
+
+lint-fix: ## Append a trailing newline to any tracked text file missing one
+	"$(PY)" scripts/lint_linefeeds.py --fix
 
 loop: loop-harness ## alias
 loop-harness: ## Loop runner: download-test-model -> unit -> install -> health -> test -> openspec-validate

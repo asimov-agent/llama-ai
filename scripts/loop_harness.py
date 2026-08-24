@@ -7,11 +7,12 @@ final exit code is non-zero.
 
 Stages (order matters):
     0. download — ensure the lightweight health-test model exists -> make download-test-model
-    1. unit     — hermetic unit tests                          -> make test-unit
-    2. install  — verify make install artifacts + host run     -> make test-install
-    3. health   — launch tiny model, answer 'hi' on endpoint   -> make test-health
-    4. test     — full fast suite                              -> make test
-    5. openspec — validate the active OpenSpec change          -> make openspec-validate NAME=<active>
+    1. lint     — every tracked text file ends with a newline     -> make lint
+    2. unit     — hermetic unit tests                          -> make test-unit
+    3. install  — verify make install artifacts + host run     -> make test-install
+    4. health   — launch tiny model, answer 'hi' on endpoint   -> make test-health
+    5. test     — full fast suite                              -> make test
+    6. openspec — validate the active OpenSpec change          -> make openspec-validate NAME=<active>
 
 Usage:
     python3 scripts/loop_harness.py            # auto-detect active change
@@ -31,7 +32,9 @@ REPO = Path(__file__).resolve().parent.parent
 STAGES = [
     # 0. ensure the lightweight health-test model is present (idempotent).
     ("download", ["make", "download-test-model"]),
-    # hermetic gates first
+    # linefeed lint: every tracked text file must end with a newline.
+    ("lint", ["make", "lint"]),
+    # hermetic gates FIRST after lint (cheap, no deps).
     ("unit", ["make", "test-unit"]),
     # host install test (needs ~/bin + ~/models; skips cleanly if absent)
     ("install", ["make", "test-install"]),
