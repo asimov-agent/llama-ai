@@ -58,7 +58,9 @@ from gguf import GGUFReader
 import numpy as np
 
 HOME = os.path.expanduser("~")
-MODELS_ROOT = os.path.join(HOME, "models")
+# MODELS_ROOT overridable for hermetic tests (and for custom model dirs).
+# Falls back to ~/models so local host behaviour is unchanged.
+MODELS_ROOT = os.environ.get("LLAMA_MODELS_ROOT") or os.path.join(HOME, "models")
 TOTAL_RAM_BYTES = 48 * 1024 * 1024 * 1024  # M5 Pro unified 48 GB
 OS_OVERHEAD = 3 * 1024 * 1024 * 1024       # keep headroom for macOS/Metal
 KV_QUANT = "q4_0"                           # K and V cache quant type
