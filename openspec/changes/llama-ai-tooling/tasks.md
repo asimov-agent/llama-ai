@@ -42,6 +42,5 @@ verified. The final task is a verification, ticked only when everything passes.
 
 ## Verification (final)
 
-- [ ] 6.1 `make openspec-validate NAME=llama-ai-tooling` passes
-- [ ] 6.2 Full loop green (tests + install + openspec validate) and repo committed
-      on branch `main`
+- [x] 6.1 `make openspec-validate NAME=llama-ai-tooling` passes (verified in the loop)
+- [x] 6.2 Full loop green (unit/install/test/openspec all PASS) and repo committed on branch `main` (bd92f23)
