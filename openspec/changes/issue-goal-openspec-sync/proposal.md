@@ -24,6 +24,16 @@ between the issue and the proposal/spec, so the single source of truth fragments
     code/files so the implementation reflects the OpenSpec change — and the OpenSpec
     change is the referee: on conflict, code and issue conform to it, not the
     reverse.
+- Add a **Background watch loop** axiom to `AGENTS.md` (new MANDATORY section):
+  a Hermes cron job running under the `project-manager` profile with `workdir` set
+  to this repo polls the project's GitHub state the FIRST thing each tick:
+  - **Poll PRs + CI first**: merge any PR whose CI is fully green AND has an
+    approval AND no open review threads; reconcile drift between issues and their
+    OpenSpec changes.
+  - **Every open issue must have a branch + PR in flight**; a new issue is started
+    immediately as an isolated **git worktree** (`git worktree add -b feat/<kebab>
+    ../llama-ai-wt/<kebab> main`), following the full OpenSpec-first lifecycle
+    inside that worktree, ending at a PR referencing the issue.
 - The rule covers the four-way contract: GitHub issue goal, feature branch,
   OpenSpec proposal/spec/tasks, and PR — all derived from the same objective and
   never allowed to diverge.

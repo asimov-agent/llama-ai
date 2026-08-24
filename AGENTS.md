@@ -84,6 +84,70 @@ Rules:
     branch, so every OpenSpec change and PR trace to a GitHub issue that mirrors
     the goal.
 
+## Background watch loop — poll PRs/CI and drive new issues (MANDATORY)
+
+This repo runs an autonomous background loop so nothing sits un-driven between
+interactive sessions. The loop is a **Hermes cron job** that starts a fresh
+`project-manager` session with `workdir` set to this repo, which loads THIS file
+as the session's durable rules. The first thing that session always does is poll
+the project's GitHub state, so the repo is self-driving:
+
+1. **Poll PRs + CI first, every tick.** On session start (and on each loop tick),
+   list all open PRs against `main`, read every review/comment thread on each,
+   and check every PR's CI checks:
+   ```bash
+   gh pr list --state open --base main
+   # per PR: gh pr view <N> --json reviews,comments,statusCheckRollup
+   ```
+   Whenever a PR's CI is fully GREEN **and** it has an approval **and** no open
+   review threads, merge it to `main` and clean up both branches and the merged
+   PR locally. This is the only way approved work moves to `main` — never push
+   to `main` directly.
+2. **Every open issue must have a branch + PR in flight.** List all open issues;
+   for each, confirm a feature branch exists and a PR references it. If an issue
+   has NO live branch/PR yet (or is new), **start work on it immediately** — see
+   the worktree workflow below — because every issue must end at a PR against
+   `main`.
+3. **Reconcile drift as part of the loop.** Any issue whose goal does not match
+   its OpenSpec change and code is reconciled (per the sync rule above) before
+   doing anything else on it.
+
+### Issue → git worktree (MANDATORY for background work)
+
+Because the cron loop may start several issues' work concurrently, do NOT branch
+the checked-out working tree. For each new issue you start, create an isolated
+**git worktree** off `main`:
+
+```bash
+git worktree add -b feat/<kebab-name> ../llama-ai-wt/<kebab-name> main
+# work inside ../llama-ai-wt/<kebab-name>: OpenSpec change first, then implement
+```
+
+- The worktree lives OUTSIDE the main checkout (sibling dir), so parallel issues
+  don't collide and `make`/existing state in the main checkout is untouched.
+- Inside the worktree, follow this whole file: create the OpenSpec change first
+  (`make openspec-new NAME=<kebab-name>`), write `proposal.md` +
+  `specs/<cap>/spec.md` + `tasks.md`, implement, tick tasks, validate, then push
+  and open the PR referencing the issue from that worktree's branch.
+- When you must merge an approved green PR whose branch was created in a
+  worktree, you may do so with `gh pr merge <N> --merge --delete-branch` from the
+  main checkout and remove the worktree:
+  ```bash
+  git worktree remove ../llama-ai-wt/<kebab-name>
+  ```
+- The main checkout's branch should stay on `main` (or the active PR branch of
+  whatever you're interactively helping on), with concurrency handled by
+  worktrees.
+
+### The cron job that runs this
+
+The loop is implemented as a scheduled Hermes job under the `project-manager`
+profile: recurring schedule, `workdir=/Users/andy/repository/git/llama-ai`,
+delivery back to an interactive channel if one is connected. Its prompt is the
+body of this section (poll PRs/CI, merge approved green PRs, ensure every issue
+has a branch+PR, work new issues in worktrees). Keep the job prompt and this
+section in sync.
+
 ## Git workflow — feature branch + PR (MANDATORY)
 
 Every piece of work (bug fix, feature, tooling, docs) MUST be developed on a
