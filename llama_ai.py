@@ -28,6 +28,35 @@ import subprocess
 import sys
 import time
 
+# ---------------------------------------------------------------------------
+# Interpreter bootstrap: the `gguf`/`numpy` deps live in the 3.10 venv built by
+# `make install` (~/llama-gguf-tools/.venv). This file is symlinked into ~/bin
+# as `llama_ai.py` and its shebang (#!/usr/bin/env python3) often resolves to the
+# SYSTEM python, which lacks gguf -> "No module named 'gguf'". If the imports
+# below are missing in the current interpreter, re-exec this same file with the
+# venv python so it works however it is launched (directly or via `llama-ai`).
+# ---------------------------------------------------------------------------
+try:
+    import gguf  # noqa: F401
+    import numpy  # noqa: F401
+except ImportError:
+    _venv_py = os.path.expanduser("~/llama-gguf-tools/.venv/bin/python")
+    if os.path.isfile(_venv_py):
+        if sys.executable != _venv_py:
+            args = [_venv_py, __file__] + sys.argv[1:]
+            os.execv(_venv_py, args)  # replaces this process in place
+    print(
+        "[ERROR] gguf/numpy not importable in current python and the gguf venv was not "
+        "found.\n"
+        "        Install it first:  cd ~/repository/git/llama-ai && make install\n"
+        "        Then run:          ~/llama-gguf-tools/.venv/bin/python ~/bin/llama_ai.py\n"
+        "        (or use the 'llama-ai' launcher on your PATH)",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+from gguf import GGUFReader
+import numpy as np
+
 HOME = os.path.expanduser("~")
 MODELS_ROOT = os.path.join(HOME, "models")
 TOTAL_RAM_BYTES = 48 * 1024 * 1024 * 1024  # M5 Pro unified 48 GB
