@@ -43,8 +43,11 @@ Rules:
   task in `tasks.md` MUST be a verification you can tick the moment the work is
   done — never a command like "run make phase7-archive" (which doesn't exist here)
   and never the loop command itself.
-- **Commits are a deliberate human-gated act.** Don't commit/push unless the human
-  asks; when you do, keep it a typed commit and never force-push / rewrite history.
+- **All changes MUST be committed and pushed to the current feature branch.** Do
+  NOT wait for a human to ask. Commit each batch of completed work with a typed
+  Conventional Commit message and push it to `origin feat/<branch>` as you go, so
+  work never sits uncommitted. Never force-push / rewrite history, never commit
+  `.env` or real secrets, and never push directly to `main`.
 
 ## Git workflow — feature branch + PR (MANDATORY)
 
