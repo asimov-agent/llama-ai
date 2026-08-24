@@ -78,6 +78,56 @@ protection (direct pushes to `main` are not allowed for new work).
 6. Keep each PR to one change/OpenSpec change. Rebase or merge `main` in when the
    PR goes stale; never force-push shared branches.
 
+## PR review comments — check them and reply yourself (MANDATORY, durable)
+
+When a feature branch has an OPEN PR, review commentary is a first-class source
+of work. You MUST proactively read every comment/review thread on the PR for the
+current branch, act on each one, and reply to it — WITHOUT waiting for the human
+to paste the comment into chat.
+
+1. **Check the PR for the current branch at the START of the session.** When work
+   begins (or resumes) on a branch with an open PR, read its comments and review
+   threads first:
+   ```bash
+   gh pr list --head <current-branch>            # find the PR number
+   gh pr view <N> --json reviews,comments        # PR-level comments + review summaries
+   # all inline (diff) review threads + any replies:
+   curl -s -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+     "https://api.github.com/repos/<owner>/<repo>/pulls/<N>/comments" | python3 -m json.tool
+   ```
+   Review threads live in the **pull-request comments endpoint** (inline
+   `diff_hunk` comments), not just PR-level comments — check BOTH.
+
+2. **Every comment is a work item.** Treat each review thread as an obligation:
+   - Reproduce/verify what the comment flags (run the relevant `make` gate). The
+     comment may be a genuine defect even when the CI stage is green — e.g. a
+     lint that silently skips a file (an extension-less `Dockerfile`) and thus
+     never turns red. Find the root cause, don't dismiss it.
+   - Fix the root cause, add a regression test if applicable, verify with real
+     `make` output, and **commit + push** the fix as a NORMAL (non-squashed)
+     Conventional Commit — never a squash/rebase/force-push on an open PR.
+
+3. **Reply to each thread yourself (B29a).** After the fix is pushed, post a
+   reply on the SAME thread (`in_reply_to` the original comment) that states the
+   fixing commit sha, the root cause, the change, and the verification:
+   ```bash
+   curl -s -X POST -H "Authorization: Bearer ${GITHUB_TOKEN}" -H "Accept: application/vnd.github+json" \
+     "https://api.github.com/repos/<owner>/<repo>/pulls/<N>/comments/<COMMENT_ID>/replies" \
+     -d '{"body":"Fixed in <sha>: ..."}'
+   ```
+   Reply to EVERY comment/thread — including informational questions — with a
+   direct answer. Do not wait for the human to relay them.
+
+4. **Push / API auth.** The `gh` keyring token may lack push + private-write
+   scopes. Use the repo's gitignored `.env` `GITHUB_TOKEN` (from `LLM-AI-TOKEN`
+   in `~/zshrc`) for `git push` and `gh api`/`curl` calls — load it in-memory,
+   never print it, never commit `.env`.
+
+5. **CI must reflect the resolution.** If a review thread points at a violation
+   that should have gone red, verify the *exit-code contract* end-to-end (broken
+   file → non-zero → job RED; fixed → zero → job GREEN) and confirm the
+   re-push triggers CI. Report the actual CI job result, not an assumption.
+
 ## Loop gate (run before claiming done — B20-equivalent)
 
 Never report a change done without running the loop:
