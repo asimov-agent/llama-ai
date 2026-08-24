@@ -30,5 +30,8 @@ env/
 .vscode/
 
 # --- Secrets -------------------------------------------------------------
+# Real secrets live in `.env`, which is NEVER committed. `.env.example` is a
+# committed template documenting the keys (no real values).
 .env
 .env.*
+!.env.example
