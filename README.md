@@ -202,6 +202,12 @@ The durable rules and the exact crontab entry live in `AGENTS.md` (the
 `.watchloop/prompt.txt` and `.watchloop/watchloop.log` (both gitignored). You can
 review past loop runs with `grep 'WATCH-LOOP SUMMARY' .watchloop/watchloop.log`.
 
+This contract is exercised end-to-end by verification issue
+[#7](https://github.com/asimov-agent/llama-ai/issues/7), which the loop drove to a
+real worktree → OpenSpec → code → PR lifecycle on the branch
+`feat/test-watchloop-verify-the-background-watch-loop-dr` — proof the loop is not
+just documented but actually drives a brand-new issue to a PR.
+
 ---
 
 ## Layout
