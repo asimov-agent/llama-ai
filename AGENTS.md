@@ -41,6 +41,35 @@ Rules:
 - **Commits are a deliberate human-gated act.** Don't commit/push unless the human
   asks; when you do, keep it a typed commit and never force-push / rewrite history.
 
+## Git workflow — feature branch + PR (MANDATORY)
+
+Every piece of work (bug fix, feature, tooling, docs) MUST be developed on a
+**dedicated feature branch** off `main`, never directly on `main`. Work is only
+merged into `main` through a **pull request**. This matches the remote's branch
+protection (direct pushes to `main` are not allowed for new work).
+
+1. **Before starting, branch off the latest `main`:**
+   ```bash
+   git checkout main && git pull origin main
+   git checkout -b feat/<kebab-name>     # one branch per change/PR
+   ```
+2. **Do the work on that branch** — create/update the OpenSpec change, write
+   `proposal.md` + `specs/<cap>/spec.md` + `tasks.md`, implement the code, and
+   tick each task as it's verified.
+3. **Run the loop gate** (`make loop`) — it must be GREEN, and
+   `make openspec-validate NAME=<name>` must pass, and every task in
+   `tasks.md` must be ticked (`- [ ]` → `- [x]`), before the branch is ready.
+4. **When all tasks are completed AND verified**, push the branch and open a PR
+   against `main`:
+   ```bash
+   git push -u origin feat/<kebab-name>
+   gh pr create --base main --head feat/<kebab-name> \
+       --title "feat: <kebab-name>" --body "Completes OpenSpec change <name>.<br>Loop gate GREEN, openspec validate passes, all tasks ticked."
+   ```
+5. **Never push directly to `main`.** If you need `main` updated, merge via the PR.
+6. Keep each PR to one change/OpenSpec change. Rebase or merge `main` in when the
+   PR goes stale; never force-push shared branches.
+
 ## Loop gate (run before claiming done — B20-equivalent)
 
 Never report a change done without running the loop:
