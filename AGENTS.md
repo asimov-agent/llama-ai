@@ -120,6 +120,16 @@ the local host, so behaviour is byte-identical in both. Concretely:
 Anything that adds a second, differently-implemented path for the SAME resource
 (downloader, HEALTH check, model resolution) is a regression and will be
 rejected, even when it "would just work" as a fallback.
+
+### README must always be kept in sync
+
+Any change that adds, renames, or alters a user-facing feature, `make` command,
+target, or workflow MUST be mirrored in `README.md` **in the same change** —
+document how to navigate and use it (commands, layout, behaviour). The README
+is the user's navigation/usage doc, so it must never drift from the code. When
+you add a make target, feature, or stage, update the README's corresponding
+section in the same commit before the PR is ready. A "done" report that makes a
+code change without an accompanying README update is incomplete.
 - If the full loop can't complete, still run `make test-unit` + `make
   openspec-validate` and report their real results. Never hand-edit artifacts to
   fake green; fix the root cause and re-run.
