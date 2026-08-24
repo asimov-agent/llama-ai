@@ -102,8 +102,8 @@ def _chat(url: str, prompt: str = "hi") -> str | None:
 
 
 @pytest.mark.skipif(
-    not MODEL_FILE.is_file() or not LAUNCHER.is_file(),
-    reason="lightweight test model or llama-ai launcher not installed",
+    not MODEL_FILE.is_file(),
+    reason="lightweight test model not present (~/models/Qwen/8GB/qwen2.5-0.5b-instruct-q4_0.gguf)",
 )
 def test_health_endpoint_answers_hi():
     # The launcher stops anything it finds on the chosen port, so a random high
@@ -111,12 +111,23 @@ def test_health_endpoint_answers_hi():
     port = _pick_port()
     url = _base_url(port)
 
-    # Launch the INSTALLED launcher from the ~/bin directory (the exact host
-    # install path the user/loop cares about). It resolves llama-server itself.
+    # Launch the installed `~/bin/llama-ai` wrapper when present (the exact host
+    # install path the loop cares about). On a bare CI runner with no install we
+    # fall back to running repo llama_ai.py directly with $LLAMA_SERVER (the
+    # CPU-built binary) — so the SAME health check runs locally and in CI.
+    import shutil
+    from pathlib import Path as _Path
+    _repo = _Path(__file__).resolve().parent.parent
+    if LAUNCHER.is_file():
+        argv = [str(LAUNCHER), HEALTH_MODEL, "--port", str(port)]
+        cwd = str(BIN)
+    else:
+        argv = [sys.executable, str(_repo / "llama_ai.py"), HEALTH_MODEL, "--port", str(port)]
+        cwd = str(_repo)
     log = MODEL_FILE.parent / ".run.log"
     proc = subprocess.Popen(
-        [str(LAUNCHER), HEALTH_MODEL, "--port", str(port)],
-        cwd=str(BIN),          # run it from ~/bin, as installed
+        argv,
+        cwd=cwd,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
     )
     try:

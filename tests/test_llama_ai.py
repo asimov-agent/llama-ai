@@ -14,14 +14,14 @@ import pytest
 import llama_ai
 
 
-def _minimal_gguf(tmp_path: Path) -> Path:
+def _minimal_gguf(tmp_path: Path, filename: str = "mini.gguf") -> Path:
     """Write a tiny but well-formed GGUF header so the fast reader parses it.
 
     Builds: general.architecture (str), general.name (str), block_count,
     embedding_length, attention.head_count, attention.head_count_kv,
     context_length (all uint32), tokenizer.chat_template (str).
     """
-    p = tmp_path / "mini.gguf"
+    p = tmp_path / filename
 
     def s(v: str) -> bytes:
         b = v.encode("utf-8")
@@ -75,26 +75,41 @@ def test_fast_reader_returns_none_on_non_gguf(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# model scan (reads whatever lives under ~/models)
+# model scan (reads whatever lives under MODELS_ROOT)
 # ---------------------------------------------------------------------------
-def test_models_root_exists(models_root):
-    # The python script hardcodes MODELS_ROOT = ~/models; it MUST exist on the
-    # host for the launcher to find any model.
-    assert llama_ai.MODELS_ROOT == str(models_root)
-    assert models_root.is_dir(), (
-        "~/models does not exist on this host; create it to use llama-ai"
+@pytest.fixture
+def hermetic_models_dir(tmp_path, monkeypatch):
+    """Seed a temp models dir with two mini GGUFs of different sizes and point
+    llama_ai.MODELS_ROOT at it, so the scan tests run hermetically — no host
+    ~/models dependency, no skips."""
+    models = tmp_path / "models"
+    models.mkdir()
+    _minimal_gguf(models, "a-small.gguf")                      # tiny header
+    big = _minimal_gguf(models, "z-big.gguf")                  # larger file
+    big.write_bytes(big.read_bytes() + b"\x00" * (2048 * 1024))  # ~2 MB
+    monkeypatch.setattr(llama_ai, "MODELS_ROOT", str(models))
+    return models
+
+
+def test_models_root_exists(hermetic_models_dir):
+    # MODELS_ROOT points at a real, existing seeded dir — no host dependency.
+    assert llama_ai.MODELS_ROOT == str(hermetic_models_dir)
+    assert Path(llama_ai.MODELS_ROOT).is_dir(), (
+        "MODELS_ROOT points at a dir that does not exist"
     )
 
 
-@pytest.mark.skipif(not Path(llama_ai.MODELS_ROOT).is_dir(), reason="no ~/models dir")
-def test_scan_models_returns_sorted_list():
+def test_scan_models_returns_sorted_list(hermetic_models_dir):
     models = llama_ai.scan_models()
-    assert models, "no .gguf found under ~/models"
+    assert len(models) == 2, "expected the two seeded ggu files to be scanned"
     for m in models:
         for key in ("file", "name", "arch", "size_gb", "ctx_train"):
             assert key in m, f"meta missing key {key}"
     sizes = [m["size_gb"] for m in models]
     assert sizes == sorted(sizes, reverse=True), "models not sorted by size desc"
+    # the bigger (padded z-big.gguf) must sort first
+    assert models[0]["size_gb"] > models[1]["size_gb"]
+    assert models[0]["file"].endswith("z-big.gguf")
 
 
 # ---------------------------------------------------------------------------

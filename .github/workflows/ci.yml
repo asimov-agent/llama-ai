@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]      # ALL branches
+  pull_request:
+
+# Every verification stage is its own independent job (GitHub Actions runs
+# jobs in parallel by default). Each job drives a Makefile target — the SAME
+# commands that `make loop` runs locally — and everything runs in the
+# containerized test image (python + pytest + CPU llama-server), so CI, the
+# local nerdctl host, and the local loop behave identically.
+#
+# Each stage builds the test image first (cached by the runner), runs the
+# equivalent `make <stage>`, then prunes any orphaned test containers via
+# `make test-clean` ("always removed"). The container is always started by the
+# make target (RUNTIME resolves nerdctl->docker), never invoked directly.
+jobs:
+  # ------------------------------------------------------------------
+  # lint: linefeed / editorconfig (make lint)
+  # ------------------------------------------------------------------
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Build test image
+        run: make test-image
+      - name: make lint
+        run: make lint
+      - name: Prune orphaned test containers
+        run: make test-clean
+
+  # ------------------------------------------------------------------
+  # unit: hermetic unit tests (make test-unit)
+  # ------------------------------------------------------------------
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build test image
+        run: make test-image
+      - name: make test-unit
+        run: make test-unit
+      - name: Prune orphaned test containers
+        run: make test-clean
+
+  # ------------------------------------------------------------------
+  # install: host install tests (make test-install) — skips cleanly in container
+  # ------------------------------------------------------------------
+  install:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build test image
+        run: make test-image
+      - name: make test-install
+        run: make test-install
+      - name: Prune orphaned test containers
+        run: make test-clean
+
+  # ------------------------------------------------------------------
+  # openspec: validate the active OpenSpec change (make openspec-validate)
+  # ------------------------------------------------------------------
+  openspec:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: make openspec-image
+        run: make openspec-image
+      - name: make openspec-validate
+        run: make openspec-validate NAME=ci-pipeline
+      - name: Prune orphaned test containers
+        run: make test-clean
+
+  # ------------------------------------------------------------------
+  # cpu-health: Real CPU-only lightweight-LLM check (make test-health).
+  # `test-health` == download-test-model && pytest test_health.py, all inside
+  # the container that bundles the CPU-built llama-server. NO GPU anywhere.
+  # ------------------------------------------------------------------
+  cpu-health:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build test image (incl. CPU llama-server)
+        run: make test-image
+      - name: make test-health (CPU LLM answers "hi")
+        run: make test-health
+      - name: Prune orphaned test containers
+        run: make test-clean

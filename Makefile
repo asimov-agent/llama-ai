@@ -22,7 +22,10 @@ BIN     := $(HOME)/bin
 export PATH := $(BIN):$(PATH)
 REPO    := $(shell pwd)
 VENV    := $(HOME)/llama-gguf-tools/.venv
-PY      := $(VENV)/bin/python
+# Prefer the venv python (host install) but fall back to a plain `python3`
+# when the venv is absent — e.g. a bare GitHub Actions runner. This lets the
+# same Makefile test/lint targets run identically on the host and in CI.
+PY      := $(if $(wildcard $(VENV)/bin/python),$(VENV)/bin/python,python3)
 LAUNCHER := $(BIN)/llama-ai
 # llama.cpp llama-server binary — symlinked into ~/bin so llama_ai.py resolves
 # it as `llama-server` on PATH. Override if built elsewhere.
@@ -31,7 +34,7 @@ LLAMA_SERVER_BIN ?= $(HOME)/repository/git/llama.cpp/build/bin/llama-server
 .PHONY: all install venv-install link uninstall smoke list version help \
 	openspec-image openspec-new openspec-validate openspec-status openspec-shell \
 	test test-unit test-install test-health download-test-model \
-	lint lint-fix loop loop-harness chained
+	test-image test-clean lint lint-fix loop loop-harness chained
 
 # ---- container runtime (nerdctl preferred, docker fallback) --------------
 RUNTIME ?= nerdctl
@@ -111,31 +114,72 @@ openspec-status: ## openspec status
 openspec-shell: ## Interactive shell into the repo with the openspec CLI
 	$(RUNTIME) run --rm -it -v "$(REPO)":/repo:rw -w /repo $(OS_IMG) /bin/sh
 
-# ---- Tests (pytest suite under the gguf venv python) -------------------------------
-test-unit: ## Hermetic unit tests for llama_ai.py (no ~/bin/~/models needed)
-	"$(PY)" -m pytest tests/test_llama_ai.py -p no:cacheprovider -q
+# ---- Tests (containerized — run identically on host nerdctl and CI docker) --
+# The test image bundles python + pytest + all deps; the repo is mounted at
+# /repo and llama-server is resolved via $LLAMA_SERVER (host LLAMA_BIN or CI
+# build). Bare `run` (like the openspec targets) avoids compose's `--tty`
+# console requirement under non-interactive make.
+TEST_IMG := llama-ai/test:latest
+TEST_OPTS := --rm -u root -v "$(REPO)":/repo:rw -w /repo -e HOME=/root
+TEST_RUN := $(RUNTIME) run $(TEST_OPTS) $(TEST_IMG)
 
-test-install: ## Host install tests (verify installed ~/bin/llama-ai runs a model)
-	"$(PY)" -m pytest tests/test_install.py -p no:cacheprovider -q
+test-image: ## Build the containerized test image (copies compiled requirements into context)
+	@cp tools/requirements.txt tools/requirements-dev.txt containers/test/
+	$(RUNTIME) build -t $(TEST_IMG) containers/test/
+	@echo "Test image built: $(TEST_IMG)"
 
-test-health: ## End-to-end health check: launch tiny model, answer 'hi' on the endpoint
-	"$(PY)" -m pytest tests/test_health.py -p no:cacheprovider -q -s
+test-clean: ## Remove left-over/stopped orphaned containers of the test image (interrupted/failed runs)
+	# Docker/nerdctl-agnostic: list all containers referencing the test image
+	# (name format is <random>-test-id), stop+remove ONLY the stopped/left-over
+	# ones -- never kill a currently-running test (e.g. an in-progress health
+	# check). Never uses `--filter ancestor` (docker lacks it).
+	@containers=$$($(RUNTIME) ps -a -q 2>/dev/null); \
+	for c in $$containers; do \
+	  info=$$($(RUNTIME) inspect -f '{{.Image}}' $$c 2>/dev/null || echo ""); \
+	  if printf '%s' "$$info" | grep -q "llama-ai/test"; then \
+	    running=$$($(RUNTIME) inspect -f '{{.Running}}' $$c 2>/dev/null || echo "false"); \
+	    if printf '%s' "$$running" | grep -qi "false"; then \
+	      $(RUNTIME) rm -f $$c 2>/dev/null; \
+	    fi; \
+	  fi; \
+	done; \
+	echo "Pruned stopped orphaned $(TEST_IMG) containers."
 
-test: ## Full fast suite (unit + install; health check not included — run test-health separately)
-	"$(PY)" -m pytest tests/test_llama_ai.py tests/test_install.py -p no:cacheprovider -q
+test-unit: ## Hermetic unit tests (containerized) — includes the lint regression test
+	$(TEST_RUN) python -m pytest tests/test_llama_ai.py tests/test_lint_linefeeds.py -p no:cacheprovider -q
 
-download-test-model: ## Fetch the lightweight (0.5B Q4 ~340MB) health-check model into ~/models/Qwen/8GB
-	"$(PY)" scripts/download_test_model.py
+test-install: ## Host install tests (containerized) — skips cleanly without artifacts
+	$(TEST_RUN) python -m pytest tests/test_install.py -p no:cacheprovider -q
+
+test-install-host: ## Verify the REAL host install (make install) — runs on the host where ~/bin/llama-ai + ~/models exist
+	# Runs tests/test_install.py with the gguf venv python on the HOST, so the
+	# actual `make install` artifacts (~/bin/llama-ai launcher, symlinks,
+	# ~/bin/llama-server, ~/models) are asserted — not skipped. This is the
+	# local/AGENTS.md proof that `make install` works.
+	@echo "==> Verifying host install artifacts via tests/test_install.py"
+	@$(PY) -m pytest tests/test_install.py -p no:cacheprovider -q
+
+test-health: ## End-to-end CPU health check: ensure model, then tiny model answers 'hi' (containerized)
+	$(TEST_RUN) sh -c 'python scripts/download_test_model.py && python -m pytest tests/test_health.py -p no:cacheprovider -q -s'
+
+test: ## Full fast suite (unit + install; containerized)
+	$(TEST_RUN) python -m pytest tests/test_llama_ai.py tests/test_install.py tests/test_lint_linefeeds.py -p no:cacheprovider -q
+
+download-test-model: ## Fetch the lightweight (0.5B Q4 ~340MB) model into container ~/models/Qwen/8GB
+	$(TEST_RUN) python scripts/download_test_model.py
 
 lint: ## Linefeed lint: fail closed if any tracked text file lacks a trailing newline
-	"$(PY)" scripts/lint_linefeeds.py
+	$(TEST_RUN) python scripts/lint_linefeeds.py
 
-lint-fix: ## Append a trailing newline to any tracked text file missing one
-	"$(PY)" scripts/lint_linefeeds.py --fix
+lint-fix: ## Append a missing trailing newline (containerized)
+	$(TEST_RUN) python scripts/lint_linefeeds.py --fix
 
 loop: loop-harness ## alias
-loop-harness: ## Loop runner: download-test-model -> unit -> install -> health -> test -> openspec-validate
-	"$(PY)" scripts/loop_harness.py
+loop-harness: ## Loop runner (host orchestration): image->download->lint->unit->install->health->test->openspec
+	# The harness orchestrates the other stages by shelling out to `make`, so it
+	# MUST run on the host (where make + nerdctl/docker live), NOT inside the
+	# test container. It only needs python stdlib.
+	@python3 scripts/loop_harness.py
 
 # Run every verification step explicitly (Makefile-level chain, same order as
 # loop-harness). Fails fast on the first failing step.

@@ -6,15 +6,18 @@ exits non-zero, the remaining stages still run (to report all failures) but the
 final exit code is non-zero.
 
 Stages (order matters):
-    0. download — ensure the lightweight health-test model exists -> make download-test-model
-    1. lint     — every tracked text file ends with a newline     -> make lint
-    2. unit     — hermetic unit tests                          -> make test-unit
-    3. install  — verify make install artifacts + host run     -> make test-install
-    4. health   — launch tiny model, answer 'hi' on endpoint   -> make test-health
-    5. test     — full fast suite                              -> make test
-    6. openspec — validate the active OpenSpec change          -> make openspec-validate NAME=<active>
+    0. image    — build the containerized test image              -> make test-image
+    1. download — ensure the lightweight health-test model exists -> make download-test-model
+    2. lint     — every tracked text file ends with a newline     -> make lint
+    3. unit     — hermetic unit tests                             -> make test-unit
+    4. install  — verify make install artifacts (host: ~/bin ll...)
+    5. health   — launch tiny model, answer 'hi' on endpoint      -> make test-health
+    6. test     — full fast suite                                 -> make test
+    7. openspec — validate the active OpenSpec change             -> make openspec-validate NAME=<active>
+    8. clean    — remove orphaned test containers                 -> make test-clean
 
-Usage:
+All stages run through make, each in its own `--rm` container (so `download`
+and `health` both fetch the model fresh into the container's /root/models). Usage:
     python3 scripts/loop_harness.py            # auto-detect active change
     python3 scripts/loop_harness.py NAME=<chg> # validate a specific change
     make loop                                  # equivalent wrapper
@@ -30,20 +33,27 @@ REPO = Path(__file__).resolve().parent.parent
 
 # stages: (name, [command parts])
 STAGES = [
-    # 0. ensure the lightweight health-test model is present (idempotent).
+    # 0. build the containerized test image (idempotent; needed by all stages).
+    ("image", ["make", "test-image"]),
+    # 1. ensure the lightweight health-test model is present (idempotent).
     ("download", ["make", "download-test-model"]),
     # linefeed lint: every tracked text file must end with a newline.
     ("lint", ["make", "lint"]),
     # hermetic gates FIRST after lint (cheap, no deps).
     ("unit", ["make", "test-unit"]),
-    # host install test (needs ~/bin + ~/models; skips cleanly if absent)
-    ("install", ["make", "test-install"]),
+    # host install test — verifies the REAL ~/bin/llama-ai + ~/models artifacts
+    # (skipped in-container, runs the host install assertions on the host)
+    ("install", ["make", "test-install-host"]),
     # end-to-end health: launch the tiny model, answer 'hi' on the endpoint
     ("health", ["make", "test-health"]),
     # full fast suite
     ("test", ["make", "test"]),
     # openspec validate of the active (or given) change
     ("openspec", ["make", "openspec-validate", "NAME=%s" % os.environ.get("NAME", "llama-ai-tooling")]),
+    # ALWAYS clean up orphaned test containers last (even if earlier stages
+    # failed) so no leftover `llama-ai/test` containers accumulate on the host
+    # or CI runner.
+    ("clean", ["make", "test-clean"]),
 ]
 
 

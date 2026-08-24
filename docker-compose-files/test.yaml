@@ -1,0 +1,19 @@
+# llama-ai test container (compose) — self-contained, runs identically host + CI.
+# The image bundles python + pytest + deps AND a CPU-only llama-server, so the
+# `health` stage needs no external binary anywhere.
+#
+# Usage: $(RUNTIME) compose -f docker-compose-files/test.yaml run --rm test <args>
+#   (the Makefile uses a bare `$(RUNTIME) run` to avoid compose's --tty console
+#   requirement under non-interactive make; this file documents the same image.)
+services:
+  test:
+    image: llama-ai/test:latest
+    build:
+      context: ../containers/test
+      dockerfile: Dockerfile
+    working_dir: /repo
+    environment:
+      - HOME=/root
+    volumes:
+      - ${REPO:-.}:/repo:rw
+    command: ["--help"]

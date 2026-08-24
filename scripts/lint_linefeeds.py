@@ -18,8 +18,30 @@ from pathlib import Path
 # version control is assumed binary (or already excluded) and skipped.
 TEXT_EXTS = {
     ".py", ".md", ".txt", ".yaml", ".yml", ".json", ".toml", ".ini", ".cfg",
-    ".editorconfig", ".gitignore", ".env.example", ".sh", ".bash", ".zsh",
-    ".Dockerfile", ".dockerignore", ".gitattributes",
+    ".editorconfig", ".gitignore", ".dockerignore", ".gitattributes",
+    ".sh", ".bash", ".zsh", ".env.example", ".env",
+}
+
+# Extension-less config filenames we still treat as text. These have
+# `Path.suffix == ''` so they would NOT match TEXT_EXTS — e.g. `Dockerfile`,
+# `Makefile`, `LICENSE`. Without them the linefeed lint silently skips the very
+# files EditorConfig's `insert_final_newline=true` governs (B-read: a bare
+# Dockerfile missing its trailing newline was slipping through with "LINT OK").
+TEXT_FILENAMES = {
+    "dockerfile",
+    "makefile",
+    "license",
+    "copying",
+    "notice",
+    "authors",
+    "readme",
+    "changelog",
+    "contributing",
+    ".editorconfig",
+    ".gitignore",
+    ".gitattributes",
+    ".gitmodules",
+    ".env.example",
 }
 
 
@@ -33,7 +55,13 @@ def _tracked_text_files() -> list[str]:
     except Exception as e:
         print(f"[lint] could not list tracked files: {e}", file=sys.stderr)
         return []
-    return [f for f in out.splitlines() if f and Path(f).suffix.lower() in TEXT_EXTS]
+    return [
+        f for f in out.splitlines()
+        if f and (
+            Path(f).suffix.lower() in TEXT_EXTS
+            or Path(f).name.lower() in TEXT_FILENAMES
+        )
+    ]
 
 
 def _repo_root() -> str:

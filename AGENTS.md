@@ -43,8 +43,11 @@ Rules:
   task in `tasks.md` MUST be a verification you can tick the moment the work is
   done — never a command like "run make phase7-archive" (which doesn't exist here)
   and never the loop command itself.
-- **Commits are a deliberate human-gated act.** Don't commit/push unless the human
-  asks; when you do, keep it a typed commit and never force-push / rewrite history.
+- **All changes MUST be committed and pushed to the current feature branch.** Do
+  NOT wait for a human to ask. Commit each batch of completed work with a typed
+  Conventional Commit message and push it to `origin feat/<branch>` as you go, so
+  work never sits uncommitted. Never force-push / rewrite history, never commit
+  `.env` or real secrets, and never push directly to `main`.
 
 ## Git workflow — feature branch + PR (MANDATORY)
 
@@ -75,6 +78,77 @@ protection (direct pushes to `main` are not allowed for new work).
 6. Keep each PR to one change/OpenSpec change. Rebase or merge `main` in when the
    PR goes stale; never force-push shared branches.
 
+## PR review comments — check them and reply yourself (MANDATORY, durable)
+
+When a feature branch has an OPEN PR, review commentary is a first-class source
+of work. You MUST proactively read every comment/review thread on the PR for the
+current branch, act on each one, and reply to it — WITHOUT waiting for the human
+to paste the comment into chat.
+
+1. **Check the PR for the current branch at the START of the session.** When work
+   begins (or resumes) on a branch with an open PR, read its comments and review
+   threads first:
+   ```bash
+   gh pr list --head <current-branch>            # find the PR number
+   gh pr view <N> --json reviews,comments        # PR-level comments + review summaries
+   # all inline (diff) review threads + any replies:
+   curl -s -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+     "https://api.github.com/repos/<owner>/<repo>/pulls/<N>/comments" | python3 -m json.tool
+   ```
+   Review threads live in the **pull-request comments endpoint** (inline
+   `diff_hunk` comments), not just PR-level comments — check BOTH.
+
+2. **Every comment is a work item.** Treat each review thread as an obligation:
+   - Reproduce/verify what the comment flags (run the relevant `make` gate). The
+     comment may be a genuine defect even when the CI stage is green — e.g. a
+     lint that silently skips a file (an extension-less `Dockerfile`) and thus
+     never turns red. Find the root cause, don't dismiss it.
+   - Fix the root cause, add a regression test if applicable, verify with real
+     `make` output, and **commit + push** the fix as a NORMAL (non-squashed)
+     Conventional Commit — never a squash/rebase/force-push on an open PR.
+
+3. **Reply to each thread yourself (B29a).** After the fix is pushed, post a
+   reply on the SAME thread (`in_reply_to` the original comment) that states the
+   fixing commit sha, the root cause, the change, and the verification:
+   ```bash
+   curl -s -X POST -H "Authorization: Bearer ${GITHUB_TOKEN}" -H "Accept: application/vnd.github+json" \
+     "https://api.github.com/repos/<owner>/<repo>/pulls/<N>/comments/<COMMENT_ID>/replies" \
+     -d '{"body":"Fixed in <sha>: ..."}'
+   ```
+   Reply to EVERY comment/thread — including informational questions — with a
+   direct answer. Do not wait for the human to relay them.
+
+4. **Push / API auth.** The `gh` keyring token may lack push + private-write
+   scopes. Use the repo's gitignored `.env` `GITHUB_TOKEN` (from `LLM-AI-TOKEN`
+   in `~/zshrc`) for `git push` and `gh api`/`curl` calls — load it in-memory,
+   never print it, never commit `.env`.
+
+5. **CI must reflect the resolution.** If a review thread points at a violation
+   that should have gone red, verify the *exit-code contract* end-to-end (broken
+   file → non-zero → job RED; fixed → zero → job GREEN) and confirm the
+   re-push triggers CI. Report the actual CI job result, not an assumption.
+
+6. **An APPROVED PR is merged.** When the PR for the current branch is reviewed
+   and **approved** (a reviewer's `APPROVED` review, or an explicit human
+   approval phrase), do NOT leave it sitting open — merge it to `main` once the
+   merge prerequisites hold, and clean up the branch:
+   ```bash
+   # prerequisites first — loop gate green, all jobs on the PR pass, no
+   # unresolved review threads:
+   make loop
+   gh pr checks <N>                       # every job must be green
+   # merge (squash or merge as the repo policy prefers) then delete both branches:
+   gh pr merge <N> --merge --delete-branch
+   git branch -D feat/<branch>           # local clean-up
+   ```
+   Do NOT merge a red PR, a PR with open/unresolved review threads, or a PR whose
+   CI is still running — approval is a green light, not a waiver of the gate.
+   Verify the merge landed on `main` (e.g. `git fetch origin && git log origin/main -1`)
+   and report the merge commit sha. If the reviewer engaged but did NOT approve,
+   keep resolving threads (see above); only a genuine approval triggers the merge.
+   This mirrors the obsidian-timestamp-utility B32 (review-approved squash +
+   finalise): "once a reviewer has approved, the agent may finalise".
+
 ## Loop gate (run before claiming done — B20-equivalent)
 
 Never report a change done without running the loop:
@@ -99,9 +173,73 @@ python3 scripts/loop_harness.py
   install serves a model from ~/bin.
 - The hermetic gates (`make test-unit`) need no external dependency and MUST be
   green before any "done" claim.
+
+### NO fallback implementations — one code path through the container, everywhere
+
+There are NO fallback/dual implementations in the repo. Each stage has exactly
+ONE code path that runs through the **same test container image** on CI and on
+the local host, so behaviour is byte-identical in both. Concretely:
+
+- **Model download** = the official `hf`(huggingface_hub) CLI with the
+  resume/retry-throttle logic in `hf_dl.py`. `hf` is bundled into the test image
+  (`huggingface_hub[cli]`) and found via `shutil.which("hf")` — never a
+  `requests`/`urllib` downloader, never a host-path or secondary-CLI branch.
+  `download_test_model.py` resolves `hf` from PATH only and aborts if absent
+  instead of falling back.
+- **Runtime (`RUNTIME`)** is `nerdctl` by default but resolves to `docker` only
+  because that's a *tool-availability* check for the same container engine on
+  non-Colima hosts (CI uses docker). This is not a second implementation of a
+  *stage*; the command shape is identical via either.
+
+Anything that adds a second, differently-implemented path for the SAME resource
+(downloader, HEALTH check, model resolution) is a regression and will be
+rejected, even when it "would just work" as a fallback.
+
+### README must always be kept in sync
+
+Any change that adds, renames, or alters a user-facing feature, `make` command,
+target, or workflow MUST be mirrored in `README.md` **in the same change** —
+document how to navigate and use it (commands, layout, behaviour). The README
+is the user's navigation/usage doc, so it must never drift from the code. When
+you add a make target, feature, or stage, update the README's corresponding
+section in the same commit before the PR is ready. A "done" report that makes a
+code change without an accompanying README update is incomplete.
 - If the full loop can't complete, still run `make test-unit` + `make
   openspec-validate` and report their real results. Never hand-edit artifacts to
   fake green; fix the root cause and re-run.
+
+### Local GPU verification is MANDATORY (the "exercise the GPU" rule)
+
+The CI pipeline runs a **CPU-only** health check (bare GitHub runner, no GPU).
+That alone does NOT fully verify the real hardware path. Before you report any
+change that touches the model launcher / health / serving as "done", YOU must
+also run the check **on the host with the actual GPU (Metal)** and record it:
+
+- The host's Metal `llama-server` (built by `~/repository/git/llama.cpp`) backs
+  the `~/bin/llama-ai` launcher. Run the qwen lightweight model's health check
+  through the GPU path, not just the container/CPU path:
+  ```bash
+  # 1. the full containerized loop (fast, CPU+container proof):
+  make loop            # == make loop-harness (download->lint->unit->install->health->test->openspec)
+
+  # 2. the GPU/Metal proof — launch the host launcher (which uses the REAL
+  #    Metal llama-server at ~/bin) with the Qwen/8GB model and curl its
+  #    /health + a chat "hi":
+  "$HOME/bin/llama-ai" 0.5b --port 18080 &      # uses the Metal (GPU) binary
+  curl -s "http://127.0.0.1:18080/health"
+  curl -s -X POST "http://127.0.0.1:18080/v1/chat/completions" -H 'Content-Type: application/json' \
+       -d '{"messages":[{"role":"user","content":"hi"}],"max_tokens":16}'
+  ```
+  Even simpler: `tests/test_health.py` already launches the **host**
+  `~/bin/llama-ai` launcher, which uses the **Metal llama-server** (GPU) — so on
+  a host with the venv installed, `make test-health` IS the GPU/Metal
+  verification.
+- **Mandatory, not optional:** do NOT declare "green/done" from the container
+  loop alone. You must additionally run the host/Metal `test-health` (the one
+  that uses `~/bin/llama-ai` with the Metal binary) against the `Qwen/8GB`
+  model and see the GPU reply. Record the GPU/Metal result in the loop summary.
+- If the host GPU (Metal) backend is genuinely absent, state that explicitly and
+  report the CPU/container result Honesty instead of pretending the GPU path ran.
 
 ## Makefile targets (source of truth)
 
