@@ -26,6 +26,11 @@ make openspec-validate NAME=<kebab-name>   # must pass before you claim done
 
 Rules:
 
+- **OpenSpec change + tasks FIRST, then implementation.** For every change,
+  create the OpenSpec change (`make openspec-new NAME=<name>`) and write
+  `proposal.md` + `specs/<cap>/spec.md` + `tasks.md` BEFORE implementing any code
+  and BEFORE creating the feature branch or opening the PR. This keeps every
+  change spec-tracked from its start (review-required discipline).
 - **Create/validate through the CLI, never by hand-writing the change dir.**
   The CLI runs inside the `openspec/` container with the repo mounted at `/repo`
   (RUNTIME auto-detected: nerdctl → docker). `openspec/` Dockerfile +
@@ -75,13 +80,23 @@ protection (direct pushes to `main` are not allowed for new work).
 Never report a change done without running the loop:
 
 ```bash
-make loop            # runs: test-unit -> test-install -> test -> openspec-validate
+make loop            # runs: download-test-model -> lint -> test-unit -> test-install
+                     #      -> test-health -> test -> openspec-validate
 # or the explicit runner:
 python3 scripts/loop_harness.py
 ```
 
-- `scripts/loop_harness.py` runs the stages in a fixed order and **fails closed**
-  (any failed stage → non-zero exit even if later stages run and pass).
+- `scripts/loop_harness.py` runs the seven stages in a fixed order and **fails
+  closed** (any failed stage → non-zero exit even if later stages run and pass).
+- **`lint` stage (`make lint`) is mandatory:** every tracked text file must end
+  with a trailing newline. `make lint-fix` appends the missing newlines
+  reproducibly. (.editorconfig enforces this in-editor.)
+- **`health` stage (`make test-health`) is mandatory and end-to-end real:** it
+  launches the installed `~/bin/llama-ai` with a lightweight model
+  (`~/models/Qwen/8GB/qwen2.5-0.5b-instruct-q4_0.gguf`, auto-fetched by
+  `make download-test-model`), waits for `/health`, POSTs `"hi"` to
+  `/v1/chat/completions`, and asserts a real text reply. This proves the host
+  install serves a model from ~/bin.
 - The hermetic gates (`make test-unit`) need no external dependency and MUST be
   green before any "done" claim.
 - If the full loop can't complete, still run `make test-unit` + `make
@@ -90,14 +105,25 @@ python3 scripts/loop_harness.py
 
 ## Makefile targets (source of truth)
 
+Each verification step is an independent target; `make loop`/`loop-harness`
+chains them all.
+
 - `make install` — build gguf venv, write `~/bin/llama-ai` launcher, symlink
   `~/bin/llama_ai.py` + `~/bin/llama-server`, smoke-test (needs `~/models`).
 - `make uninstall` — remove launcher + symlinks (keeps venv).
 - `make venv-install` / `make -C tools venv-install` — build the gguf venv.
-- `make test` — full pytest suite under the venv python (unit + install).
+- `make download-test-model` — fetch the lightweight health-check model
+  (`Qwen/Qwen2.5-0.5B-Instruct-GGUF` q4_0, ~340MB) into `~/models/Qwen/8GB` (idempotent).
+- `make lint` — linefeed lint: fail closed if any tracked text file lacks a trailing newline.
+- `make lint-fix` — append the missing trailing newline to tracked text files.
 - `make test-unit` — hermetic unit tests only (no `~/bin`/`~/models` needed).
 - `make test-install` — host install tests (verify installed launcher runs a model).
-- `make loop` / `make loop-harness` — run `scripts/loop_harness.py`.
+- `make test-health` — **end-to-end**: launch the tiny model from `~/bin`, answer
+  `"hi"` on `/v1/chat/completions`, assert a healthy reply.
+- `make test` — fast suite (unit + install; health excluded from `test` — run
+  `test-health` in the chain).
+- `make loop` / `make loop-harness` — run the chained `scripts/loop_harness.py`.
+- `make chained` — run each verification step explicitly in sequence, fail-fast.
 - `make generate-requirements` — recompile `tools/requirements.in` →
   `tools/requirements.txt` (container or venv pip-compile).
 - `make openspec-image|new|validate|status|shell` — Dockerized OpenSpec CLI.

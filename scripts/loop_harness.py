@@ -6,9 +6,13 @@ exits non-zero, the remaining stages still run (to report all failures) but the
 final exit code is non-zero.
 
 Stages (order matters):
-    1. test      — run the full pytest suite   -> make test
-    2. install   — verify make install artifacts + host model run -> make test-install
-    3. openspec  — validate the active OpenSpec change            -> make openspec-validate NAME=<active>
+    0. download — ensure the lightweight health-test model exists -> make download-test-model
+    1. lint     — every tracked text file ends with a newline     -> make lint
+    2. unit     — hermetic unit tests                          -> make test-unit
+    3. install  — verify make install artifacts + host run     -> make test-install
+    4. health   — launch tiny model, answer 'hi' on endpoint   -> make test-health
+    5. test     — full fast suite                              -> make test
+    6. openspec — validate the active OpenSpec change          -> make openspec-validate NAME=<active>
 
 Usage:
     python3 scripts/loop_harness.py            # auto-detect active change
@@ -26,11 +30,17 @@ REPO = Path(__file__).resolve().parent.parent
 
 # stages: (name, [command parts])
 STAGES = [
-    # hermetic gates first
+    # 0. ensure the lightweight health-test model is present (idempotent).
+    ("download", ["make", "download-test-model"]),
+    # linefeed lint: every tracked text file must end with a newline.
+    ("lint", ["make", "lint"]),
+    # hermetic gates FIRST after lint (cheap, no deps).
     ("unit", ["make", "test-unit"]),
     # host install test (needs ~/bin + ~/models; skips cleanly if absent)
     ("install", ["make", "test-install"]),
-    # full suite
+    # end-to-end health: launch the tiny model, answer 'hi' on the endpoint
+    ("health", ["make", "test-health"]),
+    # full fast suite
     ("test", ["make", "test"]),
     # openspec validate of the active (or given) change
     ("openspec", ["make", "openspec-validate", "NAME=%s" % os.environ.get("NAME", "llama-ai-tooling")]),
