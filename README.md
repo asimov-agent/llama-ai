@@ -142,7 +142,8 @@ make loop              # == make loop-harness: run ALL stages in order, GREEN ga
 make test-image        # build the test image (python+pytest+deps + CPU llama-server)
 make lint              # linefeed/editorconfig lint (fail-closed)
 make test-unit         # hermetic unit tests
-make test-install      # host-install tests (skip cleanly without artifacts)
+make test-install      # install tests (run in-container; host-artifact asserts skip)
+make test-install-host # verify the REAL host install: ~/bin/llama-ai + symlinks + ~/models (runs on host)
 make test-health       # end-to-end CPU LLM check: downloads tiny model, answers "hi"
 make download-test-model  # fetch Qwen2.5-0.5B into ~/models/Qwen/8GB (via `hf` CLI)
 make openspec-validate NAME=<change>   # validate an OpenSpec change

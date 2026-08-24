@@ -10,7 +10,7 @@ Stages (order matters):
     1. download — ensure the lightweight health-test model exists -> make download-test-model
     2. lint     — every tracked text file ends with a newline     -> make lint
     3. unit     — hermetic unit tests                             -> make test-unit
-    4. install  — verify make install artifacts + host run        -> make test-install
+    4. install  — verify make install artifacts (host: ~/bin ll...)
     5. health   — launch tiny model, answer 'hi' on endpoint      -> make test-health
     6. test     — full fast suite                                 -> make test
     7. openspec — validate the active OpenSpec change             -> make openspec-validate NAME=<active>
@@ -41,8 +41,9 @@ STAGES = [
     ("lint", ["make", "lint"]),
     # hermetic gates FIRST after lint (cheap, no deps).
     ("unit", ["make", "test-unit"]),
-    # host install test (needs ~/bin + ~/models; skips cleanly if absent)
-    ("install", ["make", "test-install"]),
+    # host install test — verifies the REAL ~/bin/llama-ai + ~/models artifacts
+    # (skipped in-container, runs the host install assertions on the host)
+    ("install", ["make", "test-install-host"]),
     # end-to-end health: launch the tiny model, answer 'hi' on the endpoint
     ("health", ["make", "test-health"]),
     # full fast suite

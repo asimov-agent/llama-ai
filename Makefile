@@ -151,6 +151,14 @@ test-unit: ## Hermetic unit tests (containerized)
 test-install: ## Host install tests (containerized) — skips cleanly without artifacts
 	$(TEST_RUN) python -m pytest tests/test_install.py -p no:cacheprovider -q
 
+test-install-host: ## Verify the REAL host install (make install) — runs on the host where ~/bin/llama-ai + ~/models exist
+	# Runs tests/test_install.py with the gguf venv python on the HOST, so the
+	# actual `make install` artifacts (~/bin/llama-ai launcher, symlinks,
+	# ~/bin/llama-server, ~/models) are asserted — not skipped. This is the
+	# local/AGENTS.md proof that `make install` works.
+	@echo "==> Verifying host install artifacts via tests/test_install.py"
+	@$(PY) -m pytest tests/test_install.py -p no:cacheprovider -q
+
 test-health: ## End-to-end CPU health check: ensure model, then tiny model answers 'hi' (containerized)
 	$(TEST_RUN) sh -c 'python scripts/download_test_model.py && python -m pytest tests/test_health.py -p no:cacheprovider -q -s'
 
