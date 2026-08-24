@@ -48,25 +48,41 @@ Rules:
   Conventional Commit message and push it to `origin feat/<branch>` as you go, so
   work never sits uncommitted. Never force-push / rewrite history, never commit
   `.env` or real secrets, and never push directly to `main`.
-- **Every work item's GOAL lives in the GitHub issue; keep it in sync (MANDATORY).**
-  Each work item is driven by a GitHub issue (the *issue file*). The issue's goal
-  and the OpenSpec change created from it must stay in lock-step — they are two
-  faces of the same objective and must never diverge:
-  - When you **change the goal** of a work item (scope, objective, acceptance,
-    the `Why`/`What Changes` of the proposal), you MUST mirror that same change
-    in the **GitHub issue body** AND in the OpenSpec change (`proposal.md`,
-    `specs/**/spec.md`, and `tasks.md`) in the **same commit batch**, so issue,
-    proposal, and task list all describe the same goal.
-  - Treat a drift between the issue and the OpenSpec change as a defect in the
-    agent's workflow: the issue is what a human reviewer reads to understand a
-    PR, and the OpenSpec proposal/spec is the checklist of record — they must not
-    contradict each other.
-  - When starting work, if the issue's goal and the OpenSpec change are out of
-    sync, reconcile them first (update whichever is behind to match the intended
-    goal) before implementing.
+- **Every work item's GOAL lives in the GitHub issue; the issue drives the whole
+  lifecycle (MANDATORY).** Each work item starts as a GitHub issue (the *issue
+  file*). The issue's goal, the feature branch, the OpenSpec change, and the PR
+  that closes it are one pipeline — the issue is the root, and every downstream
+  artifact must trace back to it and describe the SAME objective:
+  - **Issue → feature branch → OpenSpec change → code → PR.** Creating an issue
+    means a feature branch will be created off `main` for it, that branch carries
+    the OpenSpec change (created first) + the implementation, and the work ends
+    by opening the PR against `main` from that branch. The PR body MUST reference
+    the issue so the issue and PR are linked.
+  - **Sync-back is bidirectional and continuous — even when BOTH an issue and a
+    PR already exist.** If you change the OpenSpec change (`proposal.md`,
+    `specs/**/spec.md`, `tasks.md`), you MUST update the issue body AND the code /
+    files accordingly so the implementation reflects the OpenSpec change — and
+    vice-versa. The OpenSpec change is the checklist of record and the driver of
+    the code; the issue is what a reviewer reads to understand the PR. They must
+    NEVER contradict each other. Any change to one MUST be mirrored in the others
+    in the same commit batch:
+    - change **goal** (scope/objective/acceptance, the `Why`/`What Changes` of
+      the proposal) → update the issue body AND the OpenSpec change AND the code
+      it implies, together;
+    - change **code** (implementation) → make sure it matches the OpenSpec spec
+      and is reflected in the issue;
+    - change **OpenSpec** (proposal/spec/tasks) → update the issue and, where the
+      spec implies a code change, the code.
+  - Treat any drift between the issue, the OpenSpec change, and the code/files as
+    a workflow defect. The OpenSpec change is the referee: if there is a conflict,
+    the code and the issue must conform to the OpenSpec change, not the reverse.
+  - When starting/resuming work, if the issue's goal and the OpenSpec change are
+    out of sync, reconcile them FIRST (update whichever is behind to match the
+    intended goal) before implementing.
   - If a work request arrives without an issue (e.g. ad-hoc chat), create the
-    GitHub issue as part of converting the request into an OpenSpec change, so
-    every OpenSpec change traces to a GitHub issue that mirrors its goal.
+    GitHub issue as part of converting it into an OpenSpec change and a feature
+    branch, so every OpenSpec change and PR trace to a GitHub issue that mirrors
+    the goal.
 
 ## Git workflow — feature branch + PR (MANDATORY)
 

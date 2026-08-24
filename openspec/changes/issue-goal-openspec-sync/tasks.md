@@ -6,12 +6,20 @@ OpenSpec change first, then feature branch, then implementation, then validate.
 ## AGENTS.md rule
 
 - [x] 1.1 Add a MANDATORY subsection under "OpenSpec is the checklist of record"
-      that binds the GitHub issue goal to the OpenSpec change: any change to a
-      work item's goal MUST be mirrored in the GitHub issue (the issue file),
-      and the issue MUST stay in sync with the OpenSpec `proposal.md` +
-      `specs/**/spec.md` + `tasks.md` created from it.
-- [x] 1.2 Rule is durable (not a one-off): it is part of the agent's standing
-      workflow contract in AGENTS.md, applicable to every future work item.
+      that makes the GitHub issue the root of the whole work lifecycle:
+      issue → feature branch → OpenSpec change → code → PR.
+- [x] 1.2 When the agent changes the goal of a work item, the change MUST be
+      mirrored in the GitHub issue (the issue file), the OpenSpec change
+      (`proposal.md`/`specs/**/spec.md`/`tasks.md`), and the code/files — all in
+      the same commit batch.
+- [x] 1.3 Bidirectional sync-back is continuous even when BOTH an issue and a PR
+      already exist: any change to the OpenSpec change MUST update the issue body
+      AND the code/files so the implementation reflects the OpenSpec change; the
+      OpenSpec change is the referee on conflict.
+- [x] 1.4 The PR body MUST reference the issue it closes; issue, branch, OpenSpec
+      change, and PR must never diverge.
+- [x] 1.5 Rule is durable (not a one-off): part of the agent's standing workflow
+      contract in AGENTS.md, applicable to every future work item.
 
 ## Change lifecycle (this change)
 

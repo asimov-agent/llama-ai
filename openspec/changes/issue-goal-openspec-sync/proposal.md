@@ -12,12 +12,21 @@ between the issue and the proposal/spec, so the single source of truth fragments
 ## What Changes
 
 - Add a durable, MANDATORY rule to `AGENTS.md` (new subsection under the existing
-  "OpenSpec is the checklist of record" section): whenever the agent changes the
-  **goal** of a work item, it MUST update the **GitHub issue** (issue file) so it
-  stays in sync with the OpenSpec change (`proposal.md` + `specs/**/spec.md` +
-  `tasks.md`) that was created from it.
-- The rule covers the three-way contract: GitHub issue goal, OpenSpec proposal,
-  and the task list all derive from the same objective and must not diverge.
+  "OpenSpec is the checklist of record" section) that makes the GitHub issue the
+  **root of the whole work lifecycle** and binds it to the downstream artifacts:
+  - **Issue → feature branch → OpenSpec change → code → PR.** Creating an issue
+    means a feature branch is created off `main` for it, that branch carries the
+    OpenSpec change (created first) + implementation, and the work ends by opening
+    a PR against `main` from that branch that references the issue.
+  - **Continuous bidirectional sync-back, even when BOTH an issue and a PR
+    already exist.** Any change to the OpenSpec change (`proposal.md`,
+    `specs/**/spec.md`, `tasks.md`) MUST be mirrored in the issue body AND the
+    code/files so the implementation reflects the OpenSpec change — and the OpenSpec
+    change is the referee: on conflict, code and issue conform to it, not the
+    reverse.
+- The rule covers the four-way contract: GitHub issue goal, feature branch,
+  OpenSpec proposal/spec/tasks, and PR — all derived from the same objective and
+  never allowed to diverge.
 
 ## Capabilities
 
