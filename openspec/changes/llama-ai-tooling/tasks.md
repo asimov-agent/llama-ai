@@ -37,7 +37,7 @@ verified. The final task is a verification, ticked only when everything passes.
 
 ## AGENTS.md
 
-- [ ] 5.1 Author AGENTS.md documenting the OpenSpec-driven agent workflow
+- [x] 5.1 Author AGENTS.md documenting the OpenSpec-driven agent workflow
       (record steps in tasks.md, run loop before claiming done)
 
 ## Verification (final)

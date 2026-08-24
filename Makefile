@@ -16,6 +16,10 @@
 SHELL   := /bin/bash
 HOME    := $(shell printf '%s' "$$HOME")
 BIN     := $(HOME)/bin
+# Put ~/bin on PATH for every recipe so `llama-server` (symlinked there by
+# `make install`) resolves even in non-interactive make subprocesses — not just
+# in an interactive zsh that sourced ~/.zshrc.
+export PATH := $(BIN):$(PATH)
 REPO    := $(shell pwd)
 VENV    := $(HOME)/llama-gguf-tools/.venv
 PY      := $(VENV)/bin/python
