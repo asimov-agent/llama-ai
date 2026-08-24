@@ -83,3 +83,63 @@ def test_check_returns_nonzero_on_missing_newline(repo_root: Path, tmp_path: Pat
         )
     finally:
         L._tracked_text_files = orig  # type: ignore[assignment]
+
+
+def test_check_fix_appends_trailing_newline(tmp_path: Path) -> None:
+    """--fix must actually append the final newline and return 0 afterwards.
+
+    Regression guard for the dispatcher/new-OpenSpec CI failure where a
+    freshly-created tracked text file (e.g. an OpenSpec change's .yaml/.md or a
+    `scripts/` python file) was written WITHOUT a trailing newline, turning the
+    CI `lint` job red even though everything else was green. The repair path
+    `check(fix=True)` must add the newline so the next `check()` is green, and
+    the recovery must be idempotent (a clean file stays clean).
+    """
+    target = tmp_path / "fresh_write.txt"
+    target.write_bytes(b"skip_specs: true")  # written without final newline
+
+    # --fix
+    plugin = _tracked_offender_fn(target)
+
+    orig = L._tracked_text_files
+    L._tracked_text_files = plugin  # type: ignore[assignment]
+    try:
+        rc_fix = L.check(fix=True, report=False)
+        # after fix the file ends with a newline and re-check returns 0
+        assert target.read_bytes().endswith(b"\n"), "check(fix=True) must append a trailing \\n"
+        rc_after = L.check(report=False)
+        assert rc_fix == 0, f"fix pass should succeed, got rc={rc_fix}"
+        assert rc_after == 0, "a newly-fixed file must lint green immediately after"
+    finally:
+        L._tracked_text_files = orig  # type: ignore[assignment]
+
+
+def _tracked_offender_fn(offender: Path):
+    """Return a tracked-files stub that reports just ONE offender (absolute)."""
+    origin = offender.resolve()
+
+    def _one() -> list[str]:
+        return [str(origin)]
+
+    return _one
+
+
+def test_fix_returns_failfast_on_real_openspec_files_ending_newline(tmp_path: Path) -> None:
+    """The exact repo class-of-bug: a tracked text file (like an OpenSpec
+    change .yaml or a scripts/*.py) created without a final newline is caught
+    and, after --fix, is clean. Uses a realistic extension ('.yaml') inside the
+    TEXT_EXTS set so it is scanned by the real logic.
+    """
+    target = tmp_path / "change.yaml"
+    target.write_bytes(b"schema: spec-driven\ncreated: 2026-08-24")  # no trailing newline
+    one = _tracked_offender_fn(target)
+
+    orig = L._tracked_text_files
+    L._tracked_text_files = one  # type: ignore[assignment]
+    try:
+        assert L.check(report=False) == 1, "missing newline must be flagged"
+        L.check(fix=True, report=False)  # repair
+        assert target.read_bytes().endswith(b"\n")
+        assert L.check(report=False) == 0, "after fix must be green"
+    finally:
+        L._tracked_text_files = orig  # type: ignore[assignment]
