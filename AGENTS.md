@@ -87,10 +87,12 @@ Rules:
 ## Background watch loop — poll PRs/CI and drive new issues (MANDATORY)
 
 This repo runs an autonomous background loop so nothing sits un-driven between
-interactive sessions. The loop is a **Hermes cron job** that starts a fresh
-`project-manager` session with `workdir` set to this repo, which loads THIS file
-as the session's durable rules. The first thing that session always does is poll
-the project's GitHub state, so the repo is self-driving:
+interactive sessions. The loop is a **host crontab** entry (not the in-process
+Hermes scheduler, whose ~3-min hard interrupt is too short for a full issue
+pipeline). Every 20 minutes, it launches a fresh one-shot **`project-manager`
+Hermes session** with cwd set to this repo (`cd` to the repo before invoking),
+which loads THIS file as the session's durable rules. The first thing that session
+always does is poll the project's GitHub state, so the repo is self-driving:
 
 1. **Poll PRs + CI first, every tick.** On session start (and on each loop tick),
    list all open PRs against `main`, read every review/comment thread on each,
@@ -139,14 +141,32 @@ git worktree add -b feat/<kebab-name> ../llama-ai-wt/<kebab-name> main
   whatever you're interactively helping on), with concurrency handled by
   worktrees.
 
-### The cron job that runs this
+### The host crontab that runs this
 
-The loop is implemented as a scheduled Hermes job under the `project-manager`
-profile: recurring schedule, `workdir=/Users/andy/repository/git/llama-ai`,
-delivery back to an interactive channel if one is connected. Its prompt is the
-body of this section (poll PRs/CI, merge approved green PRs, ensure every issue
-has a branch+PR, work new issues in worktrees). Keep the job prompt and this
-section in sync.
+The loop lives in the user's host crontab (every 20 minutes: `*/20 * * * *`) and
+runs to completion with NO time limit — it is intentionally NOT the in-process
+Hermes cron scheduler because that imposes a ~3-min hard interrupt per run. The
+entry `cd`s to this repo (so AGENTS.md is loaded), sets a full `PATH`, and
+launches a one-shot session:
+
+```bash
+*/20 * * * * cd /Users/andy/repository/git/llama-ai && \
+  export PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Users/andy/.local/bin && \
+  HERMES_PROFILE=project-manager /Users/andy/.local/bin/hermes chat \
+    --query-file /Users/andy/repository/git/llama-ai/.watchloop/prompt.txt \
+    -t terminal,file,web --yolo -Q \
+    >> /Users/andy/repository/git/llama-ai/.watchloop/watchloop.log 2>&1
+```
+
+- The prompt lives in `.watchloop/prompt.txt` (gitignored; not source) and is the
+  body of this section: poll PRs/CI, merge approved green PRs, ensure every issue
+  has a branch+PR, work new issues in worktrees. Keep the prompt and this section
+  in sync.
+- Each run is a fresh `project-manager` session (no memory of prior runs); it
+  re-derives state from the repo + GitHub every run. Output appends to
+  `.watchloop/watchloop.log` — inspect via `tail`/`grep 'WATCH-LOOP SUMMARY'`.
+- To view or edit: `crontab -l` / `crontab -e`. If you ever re-create an in-process
+  Hermes cron job for this, do NOT — it would reintroduce the 3-min kill.
 
 ## Git workflow — feature branch + PR (MANDATORY)
 

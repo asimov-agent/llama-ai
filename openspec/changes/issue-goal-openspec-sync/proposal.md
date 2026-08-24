@@ -25,8 +25,9 @@ between the issue and the proposal/spec, so the single source of truth fragments
     change is the referee: on conflict, code and issue conform to it, not the
     reverse.
 - Add a **Background watch loop** axiom to `AGENTS.md` (new MANDATORY section):
-  a Hermes cron job running under the `project-manager` profile with `workdir` set
-  to this repo polls the project's GitHub state the FIRST thing each tick:
+  a `*/20 * * * *` **host crontab** launches a one-shot `project-manager` Hermes
+  session (cwd = this repo, so AGENTS.md loads) that polls the project's GitHub
+  state the FIRST thing each run:
   - **Poll PRs + CI first**: merge any PR whose CI is fully green AND has an
     approval AND no open review threads; reconcile drift between issues and their
     OpenSpec changes.
@@ -34,6 +35,9 @@ between the issue and the proposal/spec, so the single source of truth fragments
     immediately as an isolated **git worktree** (`git worktree add -b feat/<kebab>
     ../llama-ai-wt/<kebab> main`), following the full OpenSpec-first lifecycle
     inside that worktree, ending at a PR referencing the issue.
+  - Runs to completion with NO time limit (deliberately NOT the in-process Hermes
+    cron scheduler, whose ~3-min hard interrupt is too short); output appends to
+    `.watchloop/watchloop.log`, prompt at `.watchloop/prompt.txt` (gitignored).
 - The rule covers the four-way contract: GitHub issue goal, feature branch,
   OpenSpec proposal/spec/tasks, and PR — all derived from the same objective and
   never allowed to diverge.

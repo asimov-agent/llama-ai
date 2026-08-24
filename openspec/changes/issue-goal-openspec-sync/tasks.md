@@ -25,9 +25,11 @@ OpenSpec change first, then feature branch, then implementation, then validate.
       live branch/PR is started immediately as an isolated git worktree
       (`git worktree add -b feat/<kebab> ../llama-ai-wt/<kebab> main`) following
       the OpenSpec-first lifecycle inside the worktree, ending at a PR.
-- [x] 1.7 The cron job is implemented under the `project-manager` profile with
-      `workdir` = this repo (loads AGENTS.md); job prompt stays in sync with the
-      AGENTS.md Background watch loop section.
+- [x] 1.7 The watch loop runs on the HOST CRONTAB (every 20 min: `*/20 * * * *`)
+      launching a one-shot `project-manager` hermes session with cwd = this repo
+      (loads AGENTS.md), NOT the in-process Hermes cron scheduler (its ~3-min
+      interrupt is too short); prompt at `.watchloop/prompt.txt`, log at
+      `.watchloop/watchloop.log`.
 - [x] 1.8 Rule is durable (not a one-off): part of the agent's standing workflow
       contract in AGENTS.md, applicable to every future work item.
 
