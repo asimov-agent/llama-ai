@@ -1,0 +1,13 @@
+# OpenSpec CLI container (compose).
+# Usage: nerdctl compose -f docker-compose-files/openspec.yaml run --rm openspec <args>
+# Repo is mounted at /repo (rw); the CLI reads/writes the repo's openspec/ tree.
+services:
+  openspec:
+    image: llama-ai/openspec:latest
+    build:
+      context: ../openspec
+      dockerfile: Dockerfile
+    working_dir: /repo
+    volumes:
+      - ${REPO:-.}:/repo:rw
+    command: ["--help"]

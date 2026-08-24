@@ -23,16 +23,13 @@ Usage:
 """
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 import time
 
 HOME = os.path.expanduser("~")
 MODELS_ROOT = os.path.join(HOME, "models")
-LLAMA_SERVER = os.environ.get(
-    "LLAMA_SERVER",
-    os.path.join(HOME, "repository", "git", "llama.cpp", "build", "bin", "llama-server"),
-)
 TOTAL_RAM_BYTES = 48 * 1024 * 1024 * 1024  # M5 Pro unified 48 GB
 OS_OVERHEAD = 3 * 1024 * 1024 * 1024       # keep headroom for macOS/Metal
 KV_QUANT = "q4_0"                           # K and V cache quant type
@@ -229,7 +226,41 @@ def tuned_context(meta, target_bytes):
     return ctx
 
 
+# ----------------------------------------------------------------------------
+# llama-server resolution
+# ----------------------------------------------------------------------------
+def resolve_llama_server():
+    """Locate the llama-server binary.
+
+    Resolution order:
+      1. $LLAMA_SERVER env var (explicit override; must be an executable file)
+      2. `llama-server` found on PATH
+
+    If neither yields a usable binary, raise SystemExit with a clear, actionable
+    error so the launcher terminates instead of silently failing.
+    """
+    env = (os.environ.get("LLAMA_SERVER") or "").strip()
+    if env:
+        if os.path.isfile(env) and os.access(env, os.X_OK):
+            return env
+        raise SystemExit(
+            f"[ERROR] LLAMA_SERVER='{env}' is not an executable llama-server.\n"
+            "        Fix LLAMA_SERVER, or make 'llama-server' available on your PATH."
+        )
+    found = shutil.which("llama-server")
+    if found:
+        return found
+    raise SystemExit(
+        "[ERROR] llama-server binary not found on PATH.\n"
+        "        Make llama.cpp's llama-server reachable as 'llama-server', e.g.:\n"
+        "          ln -s ~/repository/git/llama.cpp/build/bin/llama-server ~/bin/llama-server\n"
+        "        (or set LLAMA_SERVER=/full/path/to/llama-server).\n"
+        "        Build it first if needed: cmake -B build -DGGML_METAL=ON && cmake --build build --target llama-server"
+    )
+
+
 def build_command(meta, ctx, port):
+    global LLAMA_SERVER
     cmd = [LLAMA_SERVER,
            "-m", meta["file"],
            "--host", "0.0.0.0",
@@ -337,6 +368,10 @@ def main():
     if kv_budget < 0:
         kv_budget = 512 * 1024 * 1024
     ctx = tuned_context(chosen, kv_budget)
+    # resolve llama-server (LLAMA_SERVER override, then PATH) BEFORE building the
+    # command — terminates with a clear error if the binary is missing.
+    global LLAMA_SERVER
+    LLAMA_SERVER = resolve_llama_server()
     cmd = build_command(chosen, ctx, args.port)
 
     print(f"\nModel : {chosen['name']} ({chosen['arch']})")
@@ -365,7 +400,8 @@ def main():
     except KeyboardInterrupt:
         print("\nStopped.")
     except FileNotFoundError:
-        print(f"\nllama-server not found at {LLAMA_SERVER}. Build it first (cmake -DGGML_METAL=ON).")
+        print(f"\n[ERROR] llama-server binary disappeared after resolution ({LLAMA_SERVER}).\n"
+              "        Reinstall or put 'llama-server' on PATH and retry.")
         sys.exit(1)
 
 

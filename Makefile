@@ -20,8 +20,20 @@ REPO    := $(shell pwd)
 VENV    := $(HOME)/llama-gguf-tools/.venv
 PY      := $(VENV)/bin/python
 LAUNCHER := $(BIN)/llama-ai
+# llama.cpp llama-server binary — symlinked into ~/bin so llama_ai.py resolves
+# it as `llama-server` on PATH. Override if built elsewhere.
+LLAMA_SERVER_BIN ?= $(HOME)/repository/git/llama.cpp/build/bin/llama-server
 
-.PHONY: all install venv-install link uninstall smoke list version help
+.PHONY: all install venv-install link uninstall smoke list version help \
+	openspec-image openspec-new openspec-validate openspec-status openspec-shell \
+	test test-unit test-install loop loop-harness
+
+# ---- container runtime (nerdctl preferred, docker fallback) --------------
+RUNTIME ?= nerdctl
+ifeq ($(shell command -v $(RUNTIME) >/dev/null 2>&1 && echo yes),)
+RUNTIME = docker
+endif
+OS_IMG := llama-ai/openspec:latest
 
 all: install
 
@@ -43,6 +55,14 @@ link:
 		"$(REPO)/llama_ai.py" "$(VENV)" "$(PY)" "$(REPO)" > "$(LAUNCHER)"
 	@chmod +x "$(LAUNCHER)"
 	@ln -sfn "$(REPO)/llama_ai.py" "$(BIN)/llama_ai.py"
+	@if [ -x "$(LLAMA_SERVER_BIN)" ]; then \
+		ln -sfn "$(LLAMA_SERVER_BIN)" "$(BIN)/llama-server"; \
+		echo "==> Symlinked ~/bin/llama-server -> $(LLAMA_SERVER_BIN)"; \
+	else \
+		echo "WARN: llama-server binary not found at $(LLAMA_SERVER_BIN)." >&2; \
+		echo "      llama_ai.py will terminate until 'llama-server' is on PATH." >&2; \
+		echo "      Set LLAMA_SERVER_BIN=<path> or add llama-server to PATH." >&2; \
+	fi
 	@echo "==> Wrote $(LAUNCHER) (exec) and symlinked ~/bin/llama_ai.py -> repo"
 
 # ---- 4. smoke: confirm the launcher can list models ---------------------
@@ -60,9 +80,50 @@ generate-requirements: ## Recompile tools/requirements.in -> tools/requirements.
 version: ## Show numpy/gguf versions inside the venv
 	$(MAKE) -C tools version
 
-uninstall: ## Remove the launcher + symlink (leaves the venv)
-	@rm -f "$(LAUNCHER)" "$(BIN)/llama_ai.py"
-	@echo "Removed $(LAUNCHER) and $(BIN)/llama_ai.py (venv kept at $(VENV); 'make -C tools clean' to drop requirements.txt)"
+# ---- OpenSpec (Dockerized CLI) --------------------------------------------
+# The OpenSpec CLI runs inside the openspec/ container with the repo mounted at
+# /repo, so `make openspec-new` etc. create/validate openspec/changes/<name> in
+# this repository. This is the checklist-of-record for agent work: every step
+# you implement maps to a task in openspec/changes/<name>/tasks.md.
+
+openspec-image: ## Build the OpenSpec CLI container
+	$(RUNTIME) build -t $(OS_IMG) openspec/
+	@echo "OpenSpec image built: $(OS_IMG)"
+
+OS_OPTS := --rm -u root -v "$(REPO)":/repo:rw -w /repo $(OS_IMG)
+
+openspec-new: openspec-image ## openspec new change <NAME>
+	@test -n "$(NAME)" || { echo "Usage: make openspec-new NAME=<kebab-name>"; exit 1; }
+	$(RUNTIME) run $(OS_OPTS) openspec new change $(NAME)
+
+openspec-validate: ## openspec validate <NAME>  (fail-closed gate used by the loop)
+	@test -n "$(NAME)" || { echo "Usage: make openspec-validate NAME=<change>"; exit 1; }
+	$(RUNTIME) run $(OS_OPTS) openspec validate $(NAME)
+
+openspec-status: ## openspec status
+	$(RUNTIME) run $(OS_OPTS) openspec status
+
+openspec-shell: ## Interactive shell into the repo with the openspec CLI
+	$(RUNTIME) run --rm -it -v "$(REPO)":/repo:rw -w /repo $(OS_IMG) /bin/sh
+
+# ---- Tests (pytest suite under the gguf venv python) -------------------------------
+test-unit: ## Hermetic unit tests for llama_ai.py (no ~/bin/~/models needed)
+	"$(PY)" -m pytest tests/test_llama_ai.py -p no:cacheprovider -q
+
+test-install: ## Host install tests (verify installed ~/bin/llama-ai runs a model)
+	"$(PY)" -m pytest tests/test_install.py -p no:cacheprovider -q
+
+test: ## Full test suite (unit + install) under the venv python
+	"$(PY)" -m pytest tests -p no:cacheprovider -q
+
+loop: loop-harness ## alias
+loop-harness: ## Run the loop runner (test-unit -> test-install -> test -> openspec-validate)
+	$(PY) scripts/loop_harness.py
+
+uninstall: ## Remove the launcher + symlinks (leaves the venv)
+	@rm -f "$(LAUNCHER)" "$(BIN)/llama_ai.py" "$(BIN)/llama-server"
+	@echo "Removed $(LAUNCHER), $(BIN)/llama_ai.py, and $(BIN)/llama-server"
+	@echo "(venv kept at $(VENV); 'make -C tools clean' to drop requirements.txt)"
 
 help:
 	@echo "Targets: install (venv+launcher+symlink+smoke), venv-install, link, smoke,"

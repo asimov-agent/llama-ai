@@ -10,8 +10,10 @@ VENV    := $(HOME)/llama-gguf-tools/.venv
 
 REQIN   := requirements.in
 REQTXT  := requirements.txt
+DEVREQIN  := requirements-dev.in
+DEVREQTXT := requirements-dev.txt
 
-.PHONY: all build-image generate-requirements generate-requirements-venv venv create-venv venv-install clean version
+.PHONY: all build-image generate-requirements generate-requirements-venv venv create-venv venv-install venv-dev-install generate-requirements-dev clean version
 
 all: generate-requirements venv-install
 
@@ -48,6 +50,24 @@ generate-requirements-venv: venv-install ## pip-compile into the 3.10 venv (no c
 	$(VENV)/bin/pip-compile --output-file $(REQTXT) $(REQIN)
 	@echo "pip-compiled $(REQTXT) via venv"
 
+generate-requirements-dev: ## Compile requirements-dev.in -> requirements-dev.txt (container or venv)
+	@if [ "$(NERDCTL_TOOLS)" = "yes" ]; then \
+		echo "==> pip-compile dev via $(NERDCTL) container"; \
+		$(NERDCTL) run --rm \
+			-v "$(CURDIR)":/work:rw \
+			-w /work \
+			$(IMG) pip-compile --output-file $(DEVREQTXT) $(DEVREQIN); \
+	else \
+		echo "==> nerdctl not found; using venv pip-compile for dev deps"; \
+		$(MAKE) generate-requirements-dev-venv; \
+	fi
+	@echo "Regenerated $(DEVREQTXT)"
+
+generate-requirements-dev-venv: venv-install ## pip-compile dev deps into the venv (no container)
+	$(VENV)/bin/python -m pip install --quiet pip-tools
+	$(VENV)/bin/pip-compile --output-file $(DEVREQTXT) $(DEVREQIN)
+	@echo "pip-compiled $(DEVREQTXT) via venv"
+
 # ---- venv ------------------------------------------------------------------------
 create-venv: ## Create a python 3.10 virtualenv
 	python3.10 -m venv $(VENV)
@@ -60,6 +80,11 @@ venv-install: create-venv $(REQTXT) ## Install generated requirements.txt into t
 	$(VENV)/bin/pip install -r $(REQTXT)
 	@echo "Installed gguf deps into $(VENV)"
 	$(VENV)/bin/python -c "import gguf, numpy; print('gguf ok:', gguf.__file__)"
+
+venv-dev-install: venv-install $(DEVREQTXT) ## Install runtime + dev (pytest) deps into the 3.10 venv
+	$(VENV)/bin/pip install -r $(DEVREQTXT)
+	@echo "Installed dev deps into $(VENV)"
+	$(VENV)/bin/python -m pytest --version
 
 clean: ## Remove generated requirements.txt (keep .in as source of truth)
 	rm -f $(REQTXT)

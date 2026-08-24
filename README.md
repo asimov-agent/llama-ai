@@ -19,8 +19,8 @@ This repo bundles three pieces that were built and validated together:
 - **macOS** with an Apple Silicon GPU (tuned for 48 GB unified memory; edit the constants
   in `llama_ai.py` for less).
 - **llama.cpp** built with Metal support, producing `build/bin/llama-server`. The launcher
-  expects it at `~/repository/git/llama.cpp/build/bin/llama-server` (override with the
-  `LLAMA_SERVER` env var).
+  finds it as **`llama-server` on your PATH** (see *Install* — `make install` symlinks it
+  into `~/bin`). It terminates with a clear error if the binary is missing.
 - **Python 3.10** (Homebrew: `brew install python@3.10`) for the `gguf` tooling venv.
 - Optional `hf` CLI (Hugging Face hub) in a venv — used by `hf_dl.py`.
 
@@ -40,8 +40,12 @@ make install
    (`numpy` + `gguf==0.19.0`).
 2. **launcher** — writes an executable `~/bin/llama-ai` that runs `llama_ai.py` **with the
    venv's python**, so `gguf`/`numpy` resolve with zero extra steps.
-3. **symlink** — `ln -s` `~/bin/llama_ai.py` → this repo's `llama_ai.py`.
-4. **verify** — a `--list` smoke run confirms the install.
+3. **`llama-server` on PATH** — symlinks `~/bin/llama-server` → your llama.cpp
+   `build/bin/llama-server` (override the build path with `LLAMA_SERVER_BIN=<path>`).
+   `llama_ai.py` resolves the server as **`llama-server` on PATH** and **terminates with a
+   clear error if it isn't found**.
+4. **symlink** — `ln -s` `~/bin/llama_ai.py` → this repo's `llama_ai.py`.
+5. **verify** — a `--list` smoke run confirms the install.
 
 After `make install`, just run:
 
