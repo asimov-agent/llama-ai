@@ -48,6 +48,133 @@ Rules:
   Conventional Commit message and push it to `origin feat/<branch>` as you go, so
   work never sits uncommitted. Never force-push / rewrite history, never commit
   `.env` or real secrets, and never push directly to `main`.
+- **Every work item's GOAL lives in the GitHub issue; the issue drives the whole
+  lifecycle (MANDATORY).** Each work item starts as a GitHub issue (the *issue
+  file*). The issue's goal, the feature branch, the OpenSpec change, and the PR
+  that closes it are one pipeline — the issue is the root, and every downstream
+  artifact must trace back to it and describe the SAME objective:
+  - **Issue → feature branch → OpenSpec change → code → PR.** Creating an issue
+    means a feature branch will be created off `main` for it, that branch carries
+    the OpenSpec change (created first) + the implementation, and the work ends
+    by opening the PR against `main` from that branch. The PR body MUST reference
+    the issue so the issue and PR are linked.
+  - **Sync-back is bidirectional and continuous — even when BOTH an issue and a
+    PR already exist.** If you change the OpenSpec change (`proposal.md`,
+    `specs/**/spec.md`, `tasks.md`), you MUST update the issue body AND the code /
+    files accordingly so the implementation reflects the OpenSpec change — and
+    vice-versa. The OpenSpec change is the checklist of record and the driver of
+    the code; the issue is what a reviewer reads to understand the PR. They must
+    NEVER contradict each other. Any change to one MUST be mirrored in the others
+    in the same commit batch:
+    - change **goal** (scope/objective/acceptance, the `Why`/`What Changes` of
+      the proposal) → update the issue body AND the OpenSpec change AND the code
+      it implies, together;
+    - change **code** (implementation) → make sure it matches the OpenSpec spec
+      and is reflected in the issue;
+    - change **OpenSpec** (proposal/spec/tasks) → update the issue and, where the
+      spec implies a code change, the code.
+  - Treat any drift between the issue, the OpenSpec change, and the code/files as
+    a workflow defect. The OpenSpec change is the referee: if there is a conflict,
+    the code and the issue must conform to the OpenSpec change, not the reverse.
+  - When starting/resuming work, if the issue's goal and the OpenSpec change are
+    out of sync, reconcile them FIRST (update whichever is behind to match the
+    intended goal) before implementing.
+  - If a work request arrives without an issue (e.g. ad-hoc chat), create the
+    GitHub issue as part of converting it into an OpenSpec change and a feature
+    branch, so every OpenSpec change and PR trace to a GitHub issue that mirrors
+    the goal.
+
+## Background watch loop — poll PRs/CI and drive new issues (MANDATORY)
+
+This repo runs an autonomous background loop so nothing sits un-driven between
+interactive sessions. The loop is a **host crontab** entry (not the in-process
+Hermes scheduler, whose ~3-min hard interrupt is too short for a full issue
+pipeline). Every 20 minutes, it launches a fresh one-shot **`project-manager`
+Hermes session** with cwd set to this repo (`cd` to the repo before invoking),
+which loads THIS file as the session's durable rules. The first thing that session
+always does is poll the project's GitHub state, so the repo is self-driving:
+
+1. **Poll PRs + CI first, every tick.** On session start (and on each loop tick),
+   list all open PRs against `main`, read every review/comment thread on each,
+   and check every PR's CI checks:
+   ```bash
+   gh pr list --state open --base main
+   # per PR: gh pr view <N> --json reviews,comments,statusCheckRollup
+   ```
+   Whenever a PR's CI is fully GREEN **and** it has an approval **and** no open
+   review threads, merge it to `main` and clean up both branches and the merged
+   PR locally. This is the only way approved work moves to `main` — never push
+   to `main` directly.
+2. **Every open issue must have a branch + PR in flight.** List all open issues;
+   for each, confirm a feature branch exists and a PR references it. If an issue
+   has NO live branch/PR yet (or is new), **start work on it immediately** — see
+   the worktree workflow below — because every issue must end at a PR against
+   `main`.
+3. **Reconcile drift as part of the loop.** Any issue whose goal does not match
+   its OpenSpec change and code is reconciled (per the sync rule above) before
+   doing anything else on it.
+
+### Issue → git worktree (MANDATORY for background work)
+
+Because the cron loop may start several issues' work concurrently, do NOT branch
+the checked-out working tree. For each new issue you start, create an isolated
+**git worktree** off `main`:
+
+```bash
+git worktree add -b feat/<kebab-name> ../llama-ai-wt/<kebab-name> main
+# work inside ../llama-ai-wt/<kebab-name>: OpenSpec change first, then implement
+```
+
+- The worktree lives OUTSIDE the main checkout (sibling dir), so parallel issues
+  don't collide and `make`/existing state in the main checkout is untouched.
+- Inside the worktree, follow this whole file: create the OpenSpec change first
+  (`make openspec-new NAME=<kebab-name>`), write `proposal.md` +
+  `specs/<cap>/spec.md` + `tasks.md`, implement, tick tasks, validate, then push
+  and open the PR referencing the issue from that worktree's branch.
+- When you must merge an approved green PR whose branch was created in a
+  worktree, you may do so with `gh pr merge <N> --merge --delete-branch` from the
+  main checkout and remove the worktree:
+  ```bash
+  git worktree remove ../llama-ai-wt/<kebab-name>
+  ```
+- The main checkout's branch should stay on `main` (or the active PR branch of
+  whatever you're interactively helping on), with concurrency handled by
+  worktrees.
+
+### The host crontab that runs this
+
+The loop lives in the user's host crontab (every 20 minutes: `*/20 * * * *`) and
+runs to completion with NO time limit — it is intentionally NOT the in-process
+Hermes cron scheduler because that imposes a ~3-min hard interrupt per run. The
+entry `cd`s to this repo (so AGENTS.md is loaded), sets a full `PATH`, and
+launches a one-shot session:
+
+```bash
+*/20 * * * * cd /Users/andy/repository/git/llama-ai && \
+  export PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Users/andy/.local/bin && \
+  HERMES_PROFILE=project-manager /Users/andy/.local/bin/hermes chat \
+    --query-file /Users/andy/repository/git/llama-ai/.watchloop/prompt.txt \
+    -t terminal,file,web --yolo -Q \
+    >> /Users/andy/repository/git/llama-ai/.watchloop/watchloop.log 2>&1
+```
+
+- The prompt lives in `.watchloop/prompt.txt` (gitignored; not source) and is the
+  body of this section: poll PRs/CI, merge approved green PRs, ensure every issue
+  has a branch+PR, work new issues in worktrees. Keep the prompt and this section
+  in sync.
+- Each run is a fresh `project-manager` session (no memory of prior runs); it
+  re-derives state from the repo + GitHub every run. The crontab appends the whole
+  run transcript to `.watchloop/watchloop.log` — inspect via `tail`/`grep
+  'WATCH-LOOP SUMMARY'`.
+- **Per-branch logs (never corrupted, one per PR):** in addition to the run
+  transcript, the watch-loop agent maintains a DEDICATED log per feature branch at
+  `.watchloop/logs/<branch>.log` (e.g. `.watchloop/logs/feat-watchloop-drive-issue.log`).
+  It appends that branch's progress as it works (worktree created, OpenSpec files,
+  tasks ticked, validation results, commit SHAs, push, PR number/URL). Parallel
+  worktrees/issues therefore each have their own clean log and never overwrite or
+  interleave each other's — read a specific PR's history from its own log file.
+- To view or edit: `crontab -l` / `crontab -e`. If you ever re-create an in-process
+  Hermes cron job for this, do NOT — it would reintroduce the 3-min kill.
 
 ## Git workflow — feature branch + PR (MANDATORY)
 
