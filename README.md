@@ -180,6 +180,28 @@ change that touches the launcher/health/serving as done, you must also run the
 health check against the **host GPU (Metal)** via `~/bin/llama-ai` with the
 `Qwen/8GB` model and record the reply.
 
+### Self-driving development (background watch loop)
+
+This repository is **self-driving** when its background watch loop is installed
+on the host. A `*/20 * * * *` host crontab entry launches a one-shot
+`project-manager` Hermes session (cwd = this repo, so `AGENTS.md` loads as its
+durable rulebook) that, each tick:
+
+- **Polls PRs + CI first** and merges any PR whose CI is fully green AND has an
+  approval AND no open review threads, then cleans up the merged branch.
+- **Drives every open issue to a PR**: for any open issue lacking a live branch/
+  PR it creates an isolated git worktree feature branch off `main`
+  (`../llama-ai-wt/<kebab>`), follows the OpenSpec-first lifecycle
+  (change/proposal/spec/tasks first, then implementation), validates, then opens
+  a PR against `main` that references the issue.
+- **Keeps the issue body, OpenSpec change, and code in sync** (bidirectional,
+  continuous).
+
+The durable rules and the exact crontab entry live in `AGENTS.md` (the
+"Background watch loop" section); the loop prompt and its output log are
+`.watchloop/prompt.txt` and `.watchloop/watchloop.log` (both gitignored). You can
+review past loop runs with `grep 'WATCH-LOOP SUMMARY' .watchloop/watchloop.log`.
+
 ---
 
 ## Layout
