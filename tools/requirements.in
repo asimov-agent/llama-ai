@@ -1,0 +1,10 @@
+# GGUF model-tooling Python dependencies.
+# SINGLE source of truth: compile to requirements.txt via the pip-compile
+# container in this dir (nerdctl build + run). Never hand-edit requirements.txt.
+#
+#   make generate-requirements
+#
+# Then install into the runtime venv:
+#   make venv-install
+numpy
+gguf==0.19.0
