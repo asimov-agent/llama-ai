@@ -8,6 +8,12 @@ Model: each crontab tick runs THIS dispatcher, which:
      `project-manager` hermes worker in that issue's own worktree + own log, so
      issues are worked in PARALLEL and never serialize behind one another.
 
+NEVER-MERGE-BEHIND GATE (issue #9): a PR whose head is behind `main` is NEVER
+merged out of sync. The dispatcher does NOT merely skip such a PR — it
+forward-merges `origin/main` into the PR branch (rebase/merge-and-resolve), then
+re-attempts the gate after CI re-runs. Merge conflicts are surfaced to the
+branch's worker, never silently auto-resolved or force-deleted.
+
 PARALLEL-SAFETY:
   * every containerized `make` step inside a worker runs under a shared flock keyed
     on .watchloop/run/test.lock, so only one worker drives nerdctl at a time.
@@ -126,13 +132,66 @@ def merge_pr(pr) -> None:
     log(f"  merge result: {str(res)[:160]}")
 
 
+def run_git(*args) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", "-C", REPO, *args], capture_output=True, text=True)
+
+
+def sync_pr_with_main(pr) -> bool:
+    """Bring a behind PR's head up to date with latest origin/main (issue #9).
+
+    issue #9: a PR that is behind main MUST NOT be merged out of sync. Instead of
+    merely skipping it, forward-merge origin/main into the PR branch so it no longer
+    drifts, then let CI re-run so the gate re-attempts on a later tick. Conflicts are
+    never auto-resolved — if a merge conflict arises, leave the branch for its worker
+    to resolve and return False (the PR stays NOT merged).
+    Returns True if the PR head is now in sync with origin/main, False otherwise.
+    """
+    head_ref = pr["head"]["ref"]
+    head_sha = pr["head"]["sha"]
+    n = pr["number"]
+    r = run_git("fetch", "origin", f"+refs/heads/{head_ref}:refs/remotes/origin/{head_ref}")
+    if r.returncode != 0:
+        log(f"  PR#{n}: sync fetch failed for {head_ref}: {r.stderr.strip()[:120]}")
+        return False
+    run_git("branch", "-D", "_dispatch_sync")  # clear any stale temp branch
+    r = run_git("branch", "_dispatch_sync", f"origin/{head_ref}")
+    if r.returncode != 0:
+        log(f"  PR#{n}: cannot create temp sync ref: {r.stderr.strip()[:120]}")
+        return False
+    r = run_git(
+        "merge", "origin/main", "--no-ff",
+        "-m", f"chore: sync to latest origin/main before merge (issue #9, PR #{n})",
+    )
+    if r.returncode != 0:
+        run_git("merge", "--abort")
+        run_git("branch", "-D", "_dispatch_sync")
+        log(f"  PR#{n}: merge conflict syncing {head_ref} onto origin/main -> needs manual "
+            f"resolution, NOT merged (issue #9)")
+        return False
+    # Advance the PR branch to the synced head. force-with-lease pins to the known sha
+    # so we never clobber newer commits a worker pushed concurrently.
+    r = run_git(
+        "push", "origin", "_dispatch_sync:" + head_ref,
+        f"--force-with-lease={head_ref}:{head_sha}",
+    )
+    run_git("branch", "-D", "_dispatch_sync")
+    if r.returncode != 0:
+        log(f"  PR#{n}: sync push failed for {head_ref}: {r.stderr.strip()[:160]}")
+        return False
+    log(f"  PR#{n}: {head_ref} synced to origin/main (merge forward); CI must re-run, "
+        "re-attempting gate next tick")
+    return True
+
+
 def process_merge_gate(prs) -> None:
     for pr in prs:
         if not isinstance(pr, dict):
             continue
         n = pr["number"]
         if pr_is_behind(pr):
-            log(f"  PR#{n}: behind main (or unverifiable) -> NOT merged")
+            log(f"  PR#{n}: behind main (or unverifiable) -> NEVER merge as-is (issue #9)")
+            if sync_pr_with_main(pr):
+                log(f"  PR#{n}: synced to origin/main; will re-attempt gate after CI ")
             continue
         if not pr_approved(n):
             log(f"  PR#{n}: not approved -> NOT merged")
