@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+# PEP 563: defer annotation evaluation so `X | None` style hints parse on any
+# Python >=3.9 (the host python is 3.9; the test image is 3.10). Without this,
+# `int | None` is a runtime TypeError on 3.9.
+from __future__ import annotations
+
 """llama-ai watch-loop DISPATCHER — host crontab entrypoint.
 
 Model: each crontab tick runs THIS dispatcher, which:
@@ -505,6 +510,133 @@ plain force-push and never push to main. End final answer with a
 """
 
 
+# ------------------------------------------------------------------ stuck-PR repair
+# issue #42: when an OPEN PR is NOT mergeable because of actionable, fixable
+# reasons (unresolved review threads, or RED CI), the loop respawns the PR's
+# dedicated worker (the configured model, e.g. local llm-local) bound to the
+# PR's EXISTING branch/worktree to "repair" it: read the comments, fix root
+# cause, add regression tests, commit + push (force-with-lease) so CI turns
+# green and threads resolve, and the PR reaches the merge gate.
+#
+# NOT repairable (skipped — human-only):
+#   * "not approved" alone: approval is a human decision, never auto-driven.
+#   * "behind main": the merge gate owns syncing (issue #9), not the worker.
+#   * no issue number in the PR body: cannot map back to a worker identity.
+#
+# The repair spawn reuses spawn_worker's ATOMIC O_CREAT|O_EXCL lock + the
+# pre-spawn local-model probe, so it never duplicates a live worker and fails
+# closed if the local llama.cpp server is down.
+
+def slug_from_branch(branch: str) -> str:
+    """The worktree/lock slug for a PR branch (drops the `feat/` prefix)."""
+    return branch.removeprefix("feat/")
+
+
+def pr_repairable(pr, n: int) -> str:
+    """Classify an unmerged open PR. Returns '' if NOT actionable, else why.
+
+    Actionable (worker can fix): unresolved review threads, or red CI.
+    Ignored (human/merge-gate owns it): behind main, not-approved-only, or a
+    PR with no closing-issue keyword. Never raises on incomplete PR dicts.
+    """
+    try:
+        if pr_open_threads(n):
+            return "unresolved review threads"
+        if not ci_green(pr):
+            return "CI is red"
+    except (KeyError, TypeError):
+        return ""
+    return ""
+
+
+def pr_issue_number(pr) -> int | None:
+    """Map an open PR back to its issue via the closure keyword in its body."""
+    closed = closing_issues(pr.get("body") or "")
+    return max(closed) if closed else None
+
+
+def repair_prompt(num: int, title: str, slug: str, branch: str, wd: str,
+                  branch_log: str, reasons: list[str]) -> str:
+    """Prompt for a REPAIR worker bound to an existing PR (issue #42)."""
+    why = "; ".join(reasons)
+    return f"""You are the DEDICATED REPAIR worker for llama-ai issue #{num} ("{title}").
+
+Context: repo={REPO}, worktree={wd}, branch={branch}. AGENTS.md is loaded (cwd)
+and is your durable rulebook. An OPEN PR already exists for this work ({branch});
+it is NOT mergeable and the loop asked you to REPAIR it.
+
+WHY THIS PR IS STUCK: {why}.
+
+PARALLEL-SAFETY (MANDATORY, non-negotiable): runs in PARALLEL with other workers.
+  * Run EVERY containerized `make` target through the shared lock:
+        python3 {REPO}/scripts/serialized-make.py {REPO}/.watchloop/run/test.lock -- <target> <args>
+  * NEVER run `make loop-harness`, `make test-install-host`, or `make test`.
+  * Work ONLY in {wd} on {branch}. Push only {branch} to origin.
+
+REPAIR STEPS (do NOT reopen the issue / do NOT make a new PR):
+1) FIRST bring the branch up to date: cd {wd} && git fetch origin main; if
+   `git merge-base --is-ancestor origin/main HEAD` fails, run
+   `git rebase origin/main` and resolve any conflicts yourself (issue #9).
+2) Read the OPEN review threads on the PR (curl the PR comments endpoint,
+   token from {REPO}/.env). For EACH comment: fix the root cause, add a
+   regression test if applicable, and verify with the real `make` gates:
+   openspec-validate NAME={slug} exit 0; lint-fix; lint; test-unit (all via flock).
+3) Commit + push NORMAL (non-squashed) conventional commits; update the PR
+   branch with `git push --force-with-lease` if you had to rebase — never a
+   plain force-push, never push to main.
+4) Reply to EVERY review thread with the fixing commit sha + root cause
+   (curl POST /pulls/<N>/comments/<ID>/replies).
+5) Repeat until CI is green and all threads are resolved. If a thread or a red
+   check is NOT something you can fix (needs a human / external), say so plainly
+   in your final summary and leave it — do NOT loop forever burning tokens.
+6) APPEND your progress to {branch_log}. End final answer with a
+   'REPAIR SUMMARY'. No time limit."""
+
+
+def _spawn_worker_for_branch(branch: str, slug: str, wd: str, branch_log: str,
+                             lk: str, prompt: str, log_prefix: str) -> bool:
+    """Shared atomic lock + spawn for both fresh and repair workers. Returns True
+    if a worker was spawned (or resumed), False if a live lock suppressed it."""
+    lk_fd = None
+    try:
+        lk_fd = os.open(lk, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except OSError:
+        lk_fd = None
+
+    if lk_fd is None:
+        try:
+            live_pid = int((open(lk).read() or "0").strip() or 0)
+        except (ValueError, OSError):
+            live_pid = 0
+        if pid_alive(live_pid):
+            log(f"  {log_prefix}: worker already running (pid={live_pid}, {lk}); skip")
+            return False
+        try:
+            os.remove(lk)
+            lk_fd = os.open(lk, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except OSError:
+            log(f"  {log_prefix}: lock re-acquired elsewhere; skip")
+            return False
+        log(f"  {log_prefix}: stale lock pid={live_pid} dead; removing + resuming worker")
+
+    ensure_worktree(branch, slug)
+    prompt_file = f"{RUN}/worker-{branch.replace('/', '_')}.prompt"
+    with open(prompt_file, "w") as f:
+        f.write(prompt)
+    cmd = (
+        f"cd {wd} && HERMES_PROFILE=project-manager {HERMES} chat "
+        f"--query-file {prompt_file} -t terminal,file,web --yolo -Q "
+        f"{f'-m {WORKER_MODEL} ' if WORKER_MODEL else ''}"
+        f"{f'--provider {WORKER_PROVIDER} ' if WORKER_PROVIDER else ''}"
+        f">> {branch_log} 2>&1"
+    )
+    log(f"  {log_prefix}: spawning worker branch={branch} log={branch_log}")
+    proc = subprocess.Popen(["/bin/bash", "-lc", cmd], env=dict(os.environ))
+    os.write(lk_fd, str(proc.pid).encode())
+    os.close(lk_fd)
+    return True
+
+
 def spawn_worker(issue) -> None:
     num = issue["number"]
     title = issue["title"]
@@ -519,48 +651,76 @@ def spawn_worker(issue) -> None:
     # rest get EEXIST. This closes the TOCTOU race where two dispatchers both
     # pass os.path.exists(lk) and both spawn a worker (issue #23 doubled tick).
     # We hold the lock file open until the worker's real PID is recorded.
-    lk_fd = None
-    try:
-        lk_fd = os.open(lk, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except OSError:
-        lk_fd = None  # lock already exists -> owned by a (live or stale) worker
+    prompt = worker_prompt(num, title, slug, branch, wd, branch_log)
+    _spawn_worker_for_branch(branch, slug, wd, branch_log, lk, prompt,
+                             f"issue#{num}")
 
-    if lk_fd is None:
-        # Lock exists. Check whether the owner PID is alive.
-        try:
-            live_pid = int((open(lk).read() or "0").strip() or 0)
-        except (ValueError, OSError):
-            live_pid = 0
-        if pid_alive(live_pid):
-            log(f"  issue#{num}: worker already running (pid={live_pid}, {lk}); skip")
-            return
-        # Stale lock from a dead worker: someone must reclaim it. Remove then
-        # re-create with O_EXCL. If another dispatcher wins the race, skip.
-        try:
-            os.remove(lk)
-            lk_fd = os.open(lk, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except OSError:
-            log(f"  issue#{num}: lock re-acquired elsewhere; skip")
-            return
-        log(f"  issue#{num}: stale lock pid={live_pid} dead; removing + resuming worker")
 
-    ensure_worktree(branch, slug)
-    prompt_file = f"{RUN}/worker-{branch.replace('/', '_')}.prompt"
-    with open(prompt_file, "w") as f:
-        f.write(worker_prompt(num, title, slug, branch, wd, branch_log))
-    cmd = (
-        f"cd {wd} && HERMES_PROFILE=project-manager {HERMES} chat "
-        f"--query-file {prompt_file} -t terminal,file,web --yolo -Q "
-        f"{f'-m {WORKER_MODEL} ' if WORKER_MODEL else ''}"
-        f"{f'--provider {WORKER_PROVIDER} ' if WORKER_PROVIDER else ''}"
-        f">> {branch_log} 2>&1"
-    )
-    log(f"  issue#{num}: spawning worker branch={branch} log={branch_log}")
-    proc = subprocess.Popen(["/bin/bash", "-lc", cmd], env=dict(os.environ))
-    # Record the worker child PID (bash that waits on hermes chat), not our own,
-    # so the lock reflects a real worker and a dead PID is detectable next tick.
-    os.write(lk_fd, str(proc.pid).encode())
-    os.close(lk_fd)
+def spawn_repair_worker(pr) -> bool:
+    """Respawn a worker to REPAIR an existing stuck PR (issue #42).
+
+    Returns True if a repair worker was spawned/resumed. Uses the PR's EXISTING
+    branch + worktree + lock (never a new branch/PR). Respects the .running PID
+    lock and the pre-spawn local-model probe.
+    """
+    branch = pr.get("head", {}).get("ref", "")
+    if not branch:
+        log("  [repair] PR has no head ref; skip")
+        return False
+    num = pr_issue_number(pr)
+    if num is None:
+        log(f"  [repair] PR#{pr.get('number')} ({branch}): no closing issue in body; "
+            "cannot map to a worker — skip")
+        return False
+    slug = slug_from_branch(branch)
+    wd = f"{REPO}/../llama-ai-wt/{slug}"
+    branch_log = f"{LOGS}/feat-{slug}.log"
+    lk = f"{RUN}/worker-{branch.replace('/', '_')}.running"
+    reasons = pr.get("_repair_reasons", [])
+    prompt = repair_prompt(num, pr["title"], slug, branch, wd, branch_log, reasons)
+    return _spawn_worker_for_branch(
+        branch, slug, wd, branch_log, lk, prompt, f"repair-PR#{pr['number']}")
+
+
+def process_stuck_prs(prs, dry: bool = False) -> None:
+    """issue #42: respawn a REPAIR worker for actionable stuck open PRs.
+
+    Called AFTER the merge gate and the orphan-issue spawner. Skips PRs already
+    merged this tick, live-workered PRs (handled by the atomic lock), and
+    non-actionable PRs (behind only / not-approved only / no issue mapping, or
+    an incomplete PR dict). Never crashes the tick on a malformed entry.
+    """
+    for pr in prs:
+        if not isinstance(pr, dict):
+            continue
+        n = pr.get("number")
+        if n is None:
+            continue
+        # Guard against minimal/incomplete PR dicts (tests, API edge cases).
+        head = pr.get("head")
+        if not isinstance(head, dict) or not head.get("ref"):
+            continue  # no head ref -> can't bind a worker to a branch
+        base = pr.get("base")
+        try:
+            if pr_is_behind(pr):
+                # merge gate (issue #9) owns syncing behind PRs; never worker-repair
+                continue
+        except (KeyError, TypeError):
+            continue  # incomplete base/head -> cannot classify; skip
+        reason = pr_repairable(pr, n)
+        if not reason:
+            continue
+        pr = dict(pr)
+        pr["_repair_reasons"] = [reason]
+        if dry:
+            log(f"  [DRY] would spawn a repair worker for PR#{n} ({pr['head']['ref']}): {reason}")
+            continue
+        if effective_provider_is_local():
+            if not probe_worker_model(WORKER_MODEL_EFFECTIVE):
+                log(f"  repair-PR#{n}: worker model {WORKER_MODEL_EFFECTIVE} unreachable"
+                    f" on {LOCAL_MODEL_URL} — skipping repair")
+                continue
+        spawn_repair_worker(pr)
 
 
 # ---------------------------------------------------------------------- main
@@ -718,6 +878,15 @@ def main() -> None:
                     log(f"  issue#{num}: [DRY] would spawn worker for '{issue['title']}'")
                     continue
                 spawn_worker(issue)
+
+        # issue #42: after merging ready PRs and spawning orphan-issue workers,
+        # repair the PRs that are stuck (unresolved review threads / red CI) by
+        # respawning their dedicated worker on the EXISTING PR branch. This runs
+        # every tick so a stuck PR keeps getting repair attempts until it reaches
+        # the merge gate. Approved/behind/no-issue PRs are never touched here.
+        if isinstance(prs, list):
+            dry_run = "--dry" in sys.argv
+            process_stuck_prs(prs, dry=dry_run)
         log("tick done")
     except Exception:
         # Intentionally NO finally-release: the lock stays held for this interval
