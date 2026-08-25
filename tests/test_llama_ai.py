@@ -1,8 +1,8 @@
-"""Unit tests for llama_ai.py.
+"""Unit tests for scripts/llama_serve.py (the GGUF launcher).
 
 Run under the gguf venv python (`make test-unit`). These are hermetic:
 they do NOT launch llama-server or require installed ~/bin artifacts — they
-exercise the pure functions in llama_ai.py and the on-disk model scan.
+exercise the pure functions in scripts/llama_serve.py and the on-disk model scan.
 """
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-import llama_ai
+import scripts.llama_serve as llama_ai  # noqa: E402  (relocated from root llama_ai.py; importable: gguf+numpy come from the venv)
 
 
 def _minimal_gguf(tmp_path: Path, filename: str = "mini.gguf") -> Path:

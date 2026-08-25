@@ -316,7 +316,7 @@ ONE code path that runs through the **same test container image** on CI and on
 the local host, so behaviour is byte-identical in both. Concretely:
 
 - **Model download** = the official `hf`(huggingface_hub) CLI with the
-  resume/retry-throttle logic in `hf_dl.py`. `hf` is bundled into the test image
+  resume/retry-throttle logic in `scripts/hf_download.py`. `hf` is bundled into the test image
   (`huggingface_hub[cli]`) and found via `shutil.which("hf")` — never a
   `requests`/`urllib` downloader, never a host-path or secondary-CLI branch.
   `download_test_model.py` resolves `hf` from PATH only and aborts if absent
