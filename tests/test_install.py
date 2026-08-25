@@ -119,6 +119,6 @@ def test_launcher_script_terminates_with_missing_server(monkeypatch):
     import llama_ai
     assert callable(llama_ai.resolve_llama_server)
     # document the resolve contract in the installed script text
-    script = (REPO_ROOT / "llama_ai.py").read_text()
+    script = (REPO_ROOT / "scripts/llama_serve.py").read_text()
     assert "resolve_llama_server" in script
     assert "llama-server binary not found" in script

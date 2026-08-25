@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-llama_ai.py - GGUF model launcher + auto-tuner for llama.cpp llama-server (Metal).
+llama_serve.py - GGUF model launcher + auto-tuner for llama.cpp llama-server (Metal).
 
 Serves an OpenAI-compatible endpoint via llama.cpp's llama-server. GGUF metadata
 is read by the `gguf` package from the 3.10 venv set up by ~/llama-gguf-tools
 (make venv-install). Run with that venv's python:
 
-    ~/llama-gguf-tools/.venv/bin/python ~/bin/llama_ai.py --list
+    ~/llama-gguf-tools/.venv/bin/python ~/scripts/llama_serve.py --list
 
 - Scans ~/models/**/*.gguf
 - Lets you pick a model from a numbered list (or pass substring/alias as argv)
@@ -17,9 +17,9 @@ is read by the `gguf` package from the 3.10 venv set up by ~/llama-gguf-tools
 - Writes the exact command to <dest>/.run.log and launches llama-server
 
 Usage:
-    python3 ~/bin/llama_ai.py            # interactive picker
-    python3 ~/bin/llama_ai.py --list     # list models, no run
-    python3 ~/bin/llama_ai.py <name>     # run by substring of filename
+    python3 ~/scripts/llama_serve.py            # interactive picker
+    python3 ~/scripts/llama_serve.py --list     # list models, no run
+    python3 ~/scripts/llama_serve.py <name>     # run by substring of filename
 """
 import argparse
 import os
@@ -49,7 +49,7 @@ except ImportError:
         "[ERROR] gguf/numpy not importable in current python and the gguf venv was not "
         "found.\n"
         "        Install it first:  cd ~/repository/git/llama-ai && make install\n"
-        "        Then run:          ~/llama-gguf-tools/.venv/bin/python ~/bin/llama_ai.py\n"
+        "        Then run:          ~/llama-gguf-tools/.venv/bin/python ~/scripts/llama_serve.py\n"
         "        (or use the 'llama-ai' launcher on your PATH)",
         file=sys.stderr,
     )
@@ -139,7 +139,7 @@ def read_model_meta_fast(path):
     except Exception:
         return None
 
-    arch = str(kv.get("general.architecture", "")).lower()
+    arch = str(kv.get("general.architecture", "").lower())
     if not arch:
         return None
     name = str(kv.get("general.name", os.path.basename(path)))
@@ -194,7 +194,7 @@ def is_reasoning_model(meta):
     """Detect a reasoning/thinking-capable model from its chat template.
 
     A template that routes user prompts through a hidden chain-of-thought block
-    (e.g. DeepSeek/Ornith `<|start_of_fim|>`-style fim or 'cot' / 'reasoning'
+    (e.g. DeepSeek/Ornith <|start_of_fim|>-style fim or 'cot' / 'reasoning'
     tokens) is treated as a reasoning model. Non-reasoning chat templates return
     False.
     """
@@ -266,7 +266,7 @@ def resolve_llama_server():
     Resolution order:
       1. $LLAMA_SERVER env var (explicit override; must be an executable file)
       2. `llama-server` found on PATH
-      3. `~/bin/llama-server` (the symlink `make install` creates) — covers
+      3. ~/bin/llama-server (the symlink make install creates) — covers
          non-interactive shells where ~/bin is not on PATH
 
     If none yields a usable binary, raise SystemExit with a clear, actionable

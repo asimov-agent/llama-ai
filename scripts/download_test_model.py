@@ -49,6 +49,6 @@ if not HF_BIN or not os.path.isfile(HF_BIN):
 
 # The throttled/resumable downloader (hf_dl.py) shells out to $HF_BIN.
 os.environ.setdefault("HF_BIN", HF_BIN)
-dl = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "hf_dl.py")
+dl = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts", "hf_download.py")
 print(f"[{LABEL}] downloading {REPO_ID}::{FILENAME} -> {DEST} (via {HF_BIN})")
 sys.exit(subprocess.call([sys.executable, dl, REPO_ID, FILENAME, DEST, LABEL]))

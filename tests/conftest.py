@@ -1,7 +1,7 @@
 """Shared pytest fixtures for the llama-ai test suite.
 
 All tests run under the gguf venv python (see Makefile `test` target). We
-expose the repo root so tests can locate llama_ai.py / Makefile / tools.
+expose the repo root so tests can locate scripts/llama_serve.py / Makefile / tools.
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-import llama_ai  # noqa: E402  (importable: gguf+numpy come from the venv)
+import scripts.llama_serve as llama_ai  # noqa: E402  (importable: gguf+numpy come from the venv)
 
 HOME = Path.home()
 MODELS_ROOT = HOME / "models"

@@ -49,7 +49,7 @@ all: install
 install: venv-install link smoke
 	@echo
 	@echo "Installed. Run '$(LAUNCHER)' (e.g. 'llama-ai --list', 'llama-ai qwen')."
-	@echo "Symlink: $(BIN)/llama_ai.py -> $(REPO)/llama_ai.py"
+	@echo "Symlink: $(BIN)/llama_ai.py -> $(REPO)/scripts/llama_serve.py"
 
 # ---- 1. build the gguf-tooling venv (Python 3.10 + gguf + numpy) --------
 venv-install:
@@ -59,10 +59,10 @@ venv-install:
 # ---- 2+3. launcher wrapper + symlink into ~/bin -------------------------
 link:
 	@mkdir -p "$(BIN)"
-	@printf '#!/usr/bin/env bash\n# llama-ai launcher -> runs %s with the %s venv.\n# Prepend ~/bin to PATH so the llama-server symlink there resolves in any shell.\nexport PATH="$(BIN):$$PATH"\nexec "%s" "%s/llama_ai.py" "$$@"\n' \
-		"$(REPO)/llama_ai.py" "$(VENV)" "$(PY)" "$(REPO)" > "$(LAUNCHER)"
+	@printf '#!/usr/bin/env bash\n# llama-ai launcher -> runs %s with the %s venv.\n# Prepend ~/bin to PATH so the llama-server symlink there resolves in any shell.\nexport PATH="$(BIN):$$PATH"\nexec "%s" "%s/llama_ai.py" "$@"\n' \
+		"$(REPO)/scripts/llama_serve.py" "$(VENV)" "$(PY)" "$(REPO)" > "$(LAUNCHER)"
 	@chmod +x "$(LAUNCHER)"
-	@ln -sfn "$(REPO)/llama_ai.py" "$(BIN)/llama_ai.py"
+	@ln -sfn "$(REPO)/scripts/llama_serve.py" "$(BIN)/llama_ai.py"
 	@if [ -x "$(LLAMA_SERVER_BIN)" ]; then \
 		ln -sfn "$(LLAMA_SERVER_BIN)" "$(BIN)/llama-server"; \
 		echo "==> Symlinked ~/bin/llama-server -> $(LLAMA_SERVER_BIN)"; \
@@ -187,7 +187,8 @@ chained: test-unit test-install test-health test openspec-validate
 	@echo "All chain steps completed."
 
 uninstall: ## Remove the launcher + symlinks (leaves the venv)
-	@rm -f "$(LAUNCHER)" "$(BIN)/llama_ai.py" "$(BIN)/llama-server"
+	@rm -f "$(LAUNCHER)" "$(BIN)/llama_ai.py" "$(BIN)/llama-server" \
+		"$(REPO)/scripts/llama_serve.py" "$(REPO)/scripts/hf_download.py"
 	@echo "Removed $(LAUNCHER), $(BIN)/llama_ai.py, and $(BIN)/llama-server"
 	@echo "(venv kept at $(VENV); 'make -C tools clean' to drop requirements.txt)"
 
