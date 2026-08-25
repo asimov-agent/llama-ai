@@ -59,8 +59,8 @@ venv-install:
 # ---- 2+3. launcher wrapper + symlink into ~/bin -------------------------
 link:
 	@mkdir -p "$(BIN)"
-	@printf '#!/usr/bin/env bash\n# llama-ai launcher -> runs %s with the %s venv.\n# Prepend ~/bin to PATH so the llama-server symlink there resolves in any shell.\nexport PATH="$(BIN):$$PATH"\nexec "%s" "%s/llama_ai.py" "$@"\n' \
-		"$(REPO)/scripts/llama_serve.py" "$(VENV)" "$(PY)" "$(REPO)" > "$(LAUNCHER)"
+	@printf '#!/usr/bin/env bash\n# llama-ai launcher -> runs %s with the %s venv.\n# Prepend ~/bin to PATH so the llama-server symlink there resolves in any shell.\nexport PATH="$(BIN):$$PATH"\nexec "%s" "%s" "$$@"\n' \
+		"$(REPO)/scripts/llama_serve.py" "$(VENV)" "$(PY)" "$(REPO)/scripts/llama_serve.py" > "$(LAUNCHER)"
 	@chmod +x "$(LAUNCHER)"
 	@ln -sfn "$(REPO)/scripts/llama_serve.py" "$(BIN)/llama_ai.py"
 	@if [ -x "$(LLAMA_SERVER_BIN)" ]; then \
