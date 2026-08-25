@@ -197,6 +197,86 @@ def test_build_command_reasoning_and_slots(server_on_path):
 
 
 # ---------------------------------------------------------------------------
+# author-recommended sampling defaults (general.sampling.*)
+# ---------------------------------------------------------------------------
+def test_build_command_uses_model_sampling_when_present(server_on_path):
+    """Model-supplied sampling emits model-specific flags (separate argv elems)."""
+    meta = {
+        "file": "/models/s.gguf", "name": "s", "arch": "qwen2",
+        "n_layer": 28, "n_embd": 3584, "n_head": 28, "n_head_kv": 4,
+        "ctx_train": 32768, "chat_template": "llama3", "size_gb": 24.0,
+        "sampling": {"temperature": "0.7", "top_p": "0.95"},
+    }
+    cmd = llama_ai.build_command(meta, ctx=4096, port=11434)
+    assert "--temp" in cmd and "0.7" in cmd
+    assert "--top-p" in cmd and "0.95" in cmd
+    # the preset's values must NOT also appear (no double flags)
+    assert "0.6" not in cmd
+    assert "0.9" not in cmd
+    # flag and value adjacent (separate argv elements, not "--temp 0.7")
+    assert cmd[cmd.index("--temp") + 1] == "0.7"
+    assert cmd[cmd.index("--top-p") + 1] == "0.95"
+
+
+def test_build_command_falls_back_to_preset_when_no_sampling(server_on_path):
+    """No sampling metadata => emit the global SAMPLING preset (unchanged)."""
+    meta = {
+        "file": "/models/p.gguf", "name": "p", "arch": "qwen2",
+        "n_layer": 28, "n_embd": 3584, "n_head": 28, "n_head_kv": 4,
+        "ctx_train": 32768, "chat_template": "general", "size_gb": 24.0,
+        "sampling": {},
+    }
+    cmd = llama_ai.build_command(meta, ctx=4096, port=11434)
+    joined = " ".join(cmd)
+    assert "--temp 0.6" in joined
+    assert "--top-p 0.9" in joined
+    assert "--top-k 40" in joined
+    assert "--min-p 0.05" in joined
+    assert "--repeat-penalty 1.05" in joined
+
+
+def test_sampling_flag_map_covers_all_keys(server_on_path):
+    meta = {
+        "file": "/models/a.gguf", "name": "a", "arch": "qwen2",
+        "n_layer": 28, "n_embd": 3584, "n_head": 28, "n_head_kv": 4,
+        "ctx_train": 32768, "chat_template": "llama", "size_gb": 24.0,
+        "sampling": {
+            "temperature": "0.7", "top_p": "0.9", "top_k": "40",
+            "min_p": "0.05", "repeat_penalty": "1.1",
+        },
+    }
+    cmd = llama_ai.build_command(meta, ctx=4096, port=11434)
+    for flag in ("--temp", "--top-p", "--top-k", "--min-p", "--repeat-penalty"):
+        assert flag in cmd, f"missing {flag}"
+
+
+def test_build_command_skips_unknown_sampling_key_no_keyerror(server_on_path):
+    """An unrecognised sampling key must be ignored, never raise KeyError."""
+    meta = {
+        "file": "/models/u.gguf", "name": "u", "arch": "qwen2",
+        "n_layer": 28, "n_embd": 3584, "n_head": 28, "n_head_kv": 4,
+        "ctx_train": 32768, "chat_template": "llama", "size_gb": 24.0,
+        "sampling": {"temperature": "0.7", "nonsense_key": "9.9"},
+    }
+    cmd = llama_ai.build_command(meta, ctx=4096, port=11434)
+    assert "--temp" in cmd and "0.7" in cmd
+    assert "nonsense_key" not in cmd
+    assert "--nonsense-key" not in cmd
+
+
+def test_extract_sampling_from_kv_picks_present_fields():
+    kv = {
+        "general.architecture": "qwen2",
+        "general.sampling.temperature": 0.7,
+        "general.sampling.top_p": 0.95,
+    }
+    out = llama_ai._extract_sampling_from_kv(kv)
+    assert out == {"temperature": "0.7", "top_p": "0.95"}
+    # absent keys omitted; never raises
+    assert llama_ai._extract_sampling_from_kv({"general.architecture": "qwen2"}) == {}
+
+
+# ---------------------------------------------------------------------------
 # llama-server resolution
 # ---------------------------------------------------------------------------
 def test_resolve_from_env(monkeypatch, tmp_path):
