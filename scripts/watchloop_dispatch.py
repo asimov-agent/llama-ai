@@ -183,7 +183,9 @@ def sync_pr_with_main(pr) -> bool:
     return True
 
 
-def process_merge_gate(prs) -> None:
+def process_merge_gate(prs) -> set:
+    """Merge merge-ready PRs; return the set of issue numbers closed this tick."""
+    resolved_this_tick: set = set()
     for pr in prs:
         if not isinstance(pr, dict):
             continue
@@ -203,29 +205,42 @@ def process_merge_gate(prs) -> None:
             log(f"  PR#{n}: CI not green -> NOT merged")
             continue
         merge_pr(pr)
+        resolved_this_tick |= closing_issues(pr.get("body") or "")
+    return resolved_this_tick
 
 
 # ------------------------------------------------------------------ spawner
-def issue_has_pr(issue_num: int) -> bool:
-    """True if some open PR's body CLOSES this issue (Closes/Fixes/Resolves #N).
+def closing_issues(body) -> set:
+    """Return the set of issue numbers a PR body explicitly claims to close.
 
-    Uses a deliberate closing keyword, NOT a bare `#N` substring — a PR may mention
-    another issue in prose (e.g. "the issue #9 guard") without closing it, and a
-    substring match would wrongly suppress spawning a worker for that issue.
+    Uses a deliberate closing keyword (Closes/Fixes/Resolves #N), NOT a bare
+    `#N` substring — a PR may mention another issue in prose (e.g. "the issue
+    #94 guard") without closing it, and a substring match would wrongly suppress
+    spawning a worker for that issue.
     """
-    import re
+    if not body:
+        return set()
+    closes_re = re.compile(r"(?i)(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)\s*#\s*(\d+)")
+    return {int(m.group(2)) for m in closes_re.finditer(body)}
 
+
+def pid_alive(pid: int) -> bool:
+    """True only if *pid* is a live process on this host."""
+    if not pid or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except (ProcessLookupError, PermissionError, OSError):
+        return False
+
+
+def issue_has_pr(issue_num: int) -> bool:
+    """True if ``some open PR's body CLOSES this issue (Closes/Fixes/Resolves #N).``"""
     prs = api("/pulls?state=open&per_page=100")
     if not isinstance(prs, list):
         return False
-    closes_re = re.compile(r"(?i)(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)\s*#\s*(\d+)")
-    for pr in prs:
-        body = pr.get("body") or ""
-        for m in closes_re.finditer(body):
-            if int(m.group(2)) == issue_num:
-                return True
-    # Fall back to the title: `Closes #N`-style is not the norm; require keyword too.
-    return False
+    return any(issue_num in closing_issues(pr.get("body") or "") for pr in prs)
 
 
 def ensure_worktree(branch: str, slug: str) -> str:
@@ -278,7 +293,13 @@ Per the issue body + AGENTS.md:
 7) APPEND your progress to {branch_log} (your own log only).
 
 Resume: if a prior tick already scaffolded OpenSpec or opened partial work, continue
-it (read {branch_log}); do not restart wasted. End final answer with a
+it (read {branch_log}); do not restart wasted. ALWAYS first bring the branch up to
+date: run `git -C {wd} fetch origin main` and, if your branch tip is BEHIND
+origin/main (`git merge-base --is-ancestor origin/main HEAD` fails), run
+`git -C {wd} rebase origin/main` and resolve any conflicts yourself before
+continuing work — never sit behind main (issue #9). If you rebased a branch that
+already has an open PR, update it with `git push --force-with-lease`, never a
+plain force-push and never push to main. End final answer with a
 'WATCH-LOOP SUMMARY'. No time limit.
 """
 
@@ -293,20 +314,33 @@ def spawn_worker(issue) -> None:
     lk = f"{RUN}/worker-{branch.replace('/', '_')}.running"
 
     if os.path.exists(lk):
-        log(f"  issue#{num}: worker already running ({lk}); skip")
-        return
+        try:
+            live_pid = int((open(lk).read() or "0").strip() or 0)
+        except (ValueError, OSError):
+            live_pid = 0
+        if pid_alive(live_pid):
+            log(f"  issue#{num}: worker already running (pid={live_pid}, {lk}); skip")
+            return
+        log(f"  issue#{num}: stale lock pid={live_pid} dead; removing + resuming worker")
+        try:
+            os.remove(lk)
+        except OSError:
+            pass
     ensure_worktree(branch, slug)
     prompt_file = f"{RUN}/worker-{branch.replace('/', '_')}.prompt"
     with open(prompt_file, "w") as f:
         f.write(worker_prompt(num, title, slug, branch, wd, branch_log))
-    open(lk, "w").write(str(os.getpid()))
     cmd = (
         f"cd {wd} && HERMES_PROFILE=project-manager {HERMES} chat "
         f"--query-file {prompt_file} -t terminal,file,web --yolo -Q "
         f">> {branch_log} 2>&1"
     )
     log(f"  issue#{num}: spawning worker branch={branch} log={branch_log}")
-    subprocess.Popen(["/bin/bash", "-lc", cmd], env=dict(os.environ))
+    proc = subprocess.Popen(["/bin/bash", "-lc", cmd], env=dict(os.environ))
+    # Record the worker child PID (bash that waits on hermes chat), not our own,
+    # so the lock reflects a real worker and a dead PID is detectable next tick.
+    with open(lk, "w") as f:
+        f.write(str(proc.pid))
 
 
 # ---------------------------------------------------------------------- main
@@ -314,11 +348,12 @@ def main() -> None:
     log("tick start")
 
     prs = api("/pulls?state=open&per_page=100")
+    resolved_this_tick: set = set()
     if isinstance(prs, list):
         if "--dry" in sys.argv:
             log(f"  [DRY] skipping merge gate ({len(prs)} open PRs)")
         else:
-            process_merge_gate(prs)
+            resolved_this_tick = process_merge_gate(prs)
     else:
         log("  could not list PRs (API error); skipping merge gate")
 
@@ -328,6 +363,9 @@ def main() -> None:
             if not isinstance(issue, dict) or "pull_request" in issue:
                 continue
             num = issue["number"]
+            if num in resolved_this_tick:
+                log(f"  issue#{num}: resolved by PR merged this tick; no spawn")
+                continue
             if issue_has_pr(num):
                 log(f"  issue#{num}: PR in flight, no spawn")
                 continue
