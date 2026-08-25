@@ -20,6 +20,14 @@ PARALLEL-SAFETY:
   * the loop-harness uses a dedicated image + orchestration; the dispatcher never
     starts/invokes it and workers are forbidden from running it.
   * each worker uses its OWN git worktree and writes its OWN log.
+
+STALE-WORKTREE CLEANUP (issue #29): after a PR merges to `main`, the merged
+branch's worktree + local branch + worker lock/prompt/log files become stale and
+accumulate. Each tick, after the merge gate, the dispatcher cleans every `feat/*`
+worktree under ../llama-ai-wt/ whose HEAD is an ancestor of origin/main (fully
+merged). In-flight worktrees and worktrees whose worker is still alive are never
+touched; `--dry` reports what would be cleaned without deleting.
+
 No worker time limit => a big issue may span ticks and resume from its own log.
 """
 
@@ -35,6 +43,7 @@ import urllib.request
 REPO = "/Users/andy/repository/git/llama-ai"
 LOGS = f"{REPO}/.watchloop/logs"
 RUN = f"{REPO}/.watchloop/run"
+WORKTREE_BASE = os.path.normpath(f"{REPO}/../llama-ai-wt")
 API = "https://api.github.com/repos/asimov-agent/llama-ai"
 HERMES = "/Users/andy/.local/bin/hermes"
 
@@ -300,6 +309,103 @@ def ensure_worktree(branch: str, slug: str) -> str:
     return wd
 
 
+# ------------------------------------------------------------------ cleanup
+def _read_pid(path: str) -> int:
+    """Return the PID stored in *path*, or 0 if absent/unparseable."""
+    try:
+        return int((open(path).read() or "0").strip() or 0)
+    except (ValueError, OSError):
+        return 0
+
+
+def _git_worktrees() -> list[dict]:
+    """Parse `git worktree list --porcelain` -> [{path, branch|None}, ...]."""
+    r = subprocess.run(
+        ["git", "-C", REPO, "worktree", "list", "--porcelain"],
+        capture_output=True, text=True,
+    )
+    entries: list[dict] = []
+    cur: dict = {}
+    for ln in r.stdout.splitlines():
+        if ln.startswith("worktree "):
+            if cur:
+                entries.append(cur)
+            cur = {"path": ln.split(maxsplit=1)[1]}
+        elif ln.startswith("branch "):
+            cur["branch"] = ln.split(maxsplit=1)[1].removeprefix("refs/heads/")
+    if cur:
+        entries.append(cur)
+    return entries
+
+
+def _merged_into_main(branch: str) -> bool:
+    """True if <branch> is an ancestor of origin/main (its work already merged)."""
+    r = subprocess.run(
+        ["git", "-C", REPO, "merge-base", "--is-ancestor", branch, "origin/main"],
+        capture_output=True, text=True,
+    )
+    return r.returncode == 0
+
+
+def _worker_artifacts(slug: str) -> list[str]:
+    """The per-worker lock/prompt/log files for a worktree slug (issue #29)."""
+    stem = f"{RUN}/worker-feat_{slug}"
+    return [f"{stem}.running", f"{stem}.prompt", f"{LOGS}/feat-{slug}.log"]
+
+
+def cleanup_merged_worktrees(dry: bool = False) -> set:
+    """Auto-clean worktrees + branches of PRs already merged (issue #29).
+
+    After a PR merges, its worktree + local branch + worker lock/prompt/log files
+    become stale and accumulate. This sweep removes every `feat/*` worktree under
+    WORKTREE_BASE whose HEAD is an ancestor of origin/main (fully merged), and
+    NEVER touches:
+      * in-flight worktrees (HEAD NOT merged into origin/main) — open PRs stay, and
+      * a merged worktree whose per-worker .running PID is still alive.
+    Returns the set of cleaned branches (also reported in dry-run).
+    """
+    # Freshen remotes so the ancestry check is against latest origin/main.
+    subprocess.run(["git", "-C", REPO, "fetch", "--all", "--prune"], capture_output=True)
+    subprocess.run(["git", "-C", REPO, "fetch", "origin", "main"], capture_output=True)
+
+    base = os.path.abspath(WORKTREE_BASE)
+    cleaned: set = set()
+    for wt in _git_worktrees():
+        path = wt.get("path")
+        branch = wt.get("branch")
+        if not path or not branch or not branch.startswith("feat/"):
+            continue
+        try:
+            if os.path.commonpath([os.path.abspath(path), base]) != base:
+                continue  # not one of the dispatcher's scratch worktrees
+        except ValueError:
+            continue  # different root -> not under base
+        if not _merged_into_main(branch):
+            log(f"  [clean] {branch}: not merged (in flight) — keep")
+            continue
+        slug = os.path.basename(path)
+        # Post-worker-exit only: never delete anything a live worker still owns.
+        if pid_alive(_read_pid(f"{RUN}/worker-feat_{slug}.running")):
+            log(f"  [clean] {branch}: merged but worker still ALIVE — keep")
+            continue
+        if dry:
+            log(f"  [dry] would clean merged {branch} worktree {path}")
+            cleaned.add(branch)
+            continue
+        log(f"  [clean] merged {branch} -> removing worktree {path}")
+        subprocess.run(["git", "-C", REPO, "worktree", "remove", "--force", path],
+                       capture_output=True, text=True)
+        subprocess.run(["git", "-C", REPO, "branch", "-D", branch],
+                       capture_output=True, text=True)
+        for f in _worker_artifacts(slug):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+        cleaned.add(branch)
+    return cleaned
+
+
 def worker_prompt(num: int, title: str, slug: str, branch: str, wd: str, branch_log: str) -> str:
     return f"""You are the DEDICATED worker for llama-ai issue #{num} ("{title}").
 
@@ -521,6 +627,14 @@ def main() -> None:
                 resolved_this_tick = process_merge_gate(prs)
         else:
             log("  could not list PRs (API error); skipping merge gate")
+
+        # issue #29: after any merge this tick (and any accumulated older merge),
+        # clean the now-stale worktree + branch + worker artifacts for merged PRs.
+        dry_run = "--dry" in sys.argv
+        cleaned = cleanup_merged_worktrees(dry=dry_run)
+        if dry_run and cleaned:
+            log("  [DRY] would clean %d stale merged worktree(s): %s"
+                % (len(cleaned), ", ".join(sorted(cleaned))))
 
         issues = api("/issues?state=open&per_page=100")
         if isinstance(issues, list):
