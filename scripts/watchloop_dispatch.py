@@ -244,8 +244,23 @@ def issue_has_pr(issue_num: int) -> bool:
 
 
 def ensure_worktree(branch: str, slug: str) -> str:
-    subprocess.run(["git", "-C", REPO, "fetch", "origin", "main"], capture_output=True)
     wd = f"{REPO}/../llama-ai-wt/{slug}"
+    # Always refresh the remote tip first so BOTH new and existing worktrees
+    # branch/resume from the newest origin/main, not a stale one.
+    subprocess.run(["git", "-C", REPO, "fetch", "--all", "--prune"], capture_output=True)
+    subprocess.run(["git", "-C", REPO, "fetch", "origin", "main"], capture_output=True)
+
+    def rebase_if_behind():
+        """Rebase <branch> onto the latest origin/main if it is behind."""
+        r = subprocess.run(
+            ["git", "-C", wd, "merge-base", "--is-ancestor", "origin/main", "HEAD"],
+            capture_output=True,
+        )
+        if r.returncode == 0:
+            return  # already at/after main
+        subprocess.run(["git", "-C", wd, "rebase", "origin/main"], capture_output=True)
+        log(f"  rebased {branch} onto latest origin/main (was behind)")
+
     if not os.path.isdir(wd):
         r = subprocess.run(
             ["git", "-C", REPO, "worktree", "add", "-b", branch, wd, "origin/main"],
@@ -253,6 +268,10 @@ def ensure_worktree(branch: str, slug: str) -> str:
             text=True,
         )
         log(f"  worktree {wd} add rc={r.returncode}: {r.stderr.strip()[:120]}")
+    else:
+        # Existing worktree: bump the branch to the current remote tip before
+        # the worker resumes — never let an approved/PR branch sit behind main.
+        rebase_if_behind()
     return wd
 
 
