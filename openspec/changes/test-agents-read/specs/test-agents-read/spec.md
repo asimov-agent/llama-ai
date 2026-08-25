@@ -14,7 +14,7 @@ The repo MUST provide a command (`make test-agents-read` -> `scripts/scan_agents
 - **THEN** the scanner exits non-zero and names the `exfil_curl` pattern
 
 ### Requirement: hermes-agent is a real 3rd-party dependency (not vendored)
-The guard MUST import `tools.threat_patterns.scan_for_threats` from the installed `hermes-agent` package — a declared PyPI dependency (`tools/requirements-dev.in`, pinned `==0.19.0`). The module MUST NOT be copied/vendored into the repo.
+The guard MUST import `tools.threat_patterns.scan_for_threats` from the installed `hermes-agent` package — a genuine PyPI dependency (pinned `==0.19.0`), installed by the standalone `agents-read` CI job (python:3.12). The module MUST NOT be copied/vendored into the repo, and MUST NOT be added to the shared `tools/requirements-dev.txt` (hermes needs Python >=3.11 and would break the 3.10 test image build via `certifi` pin conflicts).
 
 #### Scenario: import from site-packages
 - **WHEN** the scanner runs with `hermes-agent` installed

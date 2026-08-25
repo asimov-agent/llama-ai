@@ -15,20 +15,20 @@ automated guard — only a manual `scan_for_threats(AGENTS.md)` on the dev host.
 - Add `scripts/scan_agents_md.py` — a fail-closed scanner importing Hermes's
   CANONICAL `tools.threat_patterns.scan_for_threats(content, scope="context")`.
   Exits non-zero + names the pattern + offending line on any match.
-- Declare `hermes-agent==0.19.0` as a real 3rd-party PyPI dependency in
-  `tools/requirements-dev.in` (compiled to `requirements-dev.txt`). The guard
-  imports the installed package — it is NOT vendored or maintained in-repo.
 - Add a standalone `agents-read` CI job (python:3.12) that installs
-  `hermes-agent`, runs the scanner, and runs the guard's unit-test corpus.
+  `hermes-agent==0.19.0` (a real PyPI dependency), runs the scanner, and runs
+  the guard's unit-test corpus.
 - Add `make test-agents-read` (host-side) and chain it into the loop harness.
 
-## Why standalone job (not the test image)
+## Why standalone job (not the test image, not the shared lockfile)
 
 `hermes-agent` requires Python >=3.11, but the project's test image is
-`python:3.10`. Bumping the test image to 3.13 causes dependency conflicts
-(e.g. `certifi` pins disagree across the compiled lockfiles). Giving the guard
-its own `python:3.12` CI job avoids destabilizing the heavy test image and its
-existing 3.10 lockfiles.
+`python:3.10`. Adding it to the shared `tools/requirements-dev.txt` breaks the
+3.10 image build (`certifi` pins conflict with `requirements.txt`). So
+`hermes-agent` is installed ONLY by the standalone `agents-read` job's own
+`python:3.12` container, keeping the 3.10 test image and its lockfile intact.
+`hermes-agent` is a genuine PyPI dependency of the guard, declared inline in
+the CI job and the Makefile target's install guidance.
 
 ## Capabilities / Contract
 
