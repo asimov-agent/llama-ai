@@ -9,6 +9,7 @@ Stages (order matters):
     0. image    — build the containerized test image              -> make test-image
     1. download — ensure the lightweight health-test model exists -> make download-test-model
     2. lint     — every tracked text file ends with a newline     -> make lint
+    2b. agents-read — AGENTS.md must not match Hermes threat patterns -> make test-agents-read
     3. unit     — hermetic unit tests                             -> make test-unit
     4. install  — verify make install artifacts (host: ~/bin ll...)
     5. health   — launch tiny model, answer 'hi' on endpoint      -> make test-health
@@ -39,6 +40,9 @@ STAGES = [
     ("download", ["make", "download-test-model"]),
     # linefeed lint: every tracked text file must end with a newline.
     ("lint", ["make", "lint"]),
+    # AGENTS.md rulebook guard: fail-closed scan against Hermes context-file
+    # threat patterns (must not silently drop the workers' rulebook).
+    ("agents-read", ["make", "test-agents-read"]),
     # hermetic gates FIRST after lint (cheap, no deps).
     ("unit", ["make", "test-unit"]),
     # host install test — verifies the REAL ~/bin/llama-ai + ~/models artifacts

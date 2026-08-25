@@ -148,6 +148,9 @@ test-clean: ## Remove left-over/stopped orphaned containers of the test image (i
 test-unit: ## Hermetic unit tests (containerized) — includes the lint regression test
 	$(TEST_RUN) python -m pytest tests/test_llama_ai.py tests/test_lint_linefeeds.py tests/test_watchloop_dispatch.py -p no:cacheprovider -q
 
+test-agents-read: ## Guard: AGENTS.md must not match Hermes context-file threat patterns (fail-closed)
+	$(TEST_RUN) python scripts/scan_agents_md.py AGENTS.md
+
 test-install: ## Host install tests (containerized) — skips cleanly without artifacts
 	$(TEST_RUN) python -m pytest tests/test_install.py -p no:cacheprovider -q
 
@@ -183,7 +186,7 @@ loop-harness: ## Loop runner (host orchestration): image->download->lint->unit->
 
 # Run every verification step explicitly (Makefile-level chain, same order as
 # loop-harness). Fails fast on the first failing step.
-chained: test-unit test-install test-health test openspec-validate
+chained: test-unit test-agents-read test-install test-health test openspec-validate
 	@echo "All chain steps completed."
 
 uninstall: ## Remove the launcher + symlinks (leaves the venv)

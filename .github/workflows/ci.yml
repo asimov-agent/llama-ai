@@ -61,6 +61,20 @@ jobs:
         run: make test-clean
 
   # ------------------------------------------------------------------
+  # agents-read: AGENTS.md must not match Hermes context-file threat patterns
+  # ------------------------------------------------------------------
+  agents-read:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build test image (incl. hermes-agent)
+        run: make test-image
+      - name: make test-agents-read
+        run: make test-agents-read
+      - name: Prune orphaned test containers
+        run: make test-clean
+
+  # ------------------------------------------------------------------
   # openspec: validate the active OpenSpec change (make openspec-validate)
   # ------------------------------------------------------------------
   openspec:
