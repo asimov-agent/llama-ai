@@ -93,6 +93,8 @@ jobs:
         run: make openspec-image
       - name: make openspec-validate
         run: make openspec-validate NAME=ci-pipeline
+      - name: Assert all tasks checked (fails on unchecked `- [ ]`)
+        run: make openspec-tasks-check NAME=ci-pipeline
       - name: Prune orphaned test containers
         run: make test-clean
 

@@ -10,15 +10,15 @@ targets run through the shared lock helper.
 
 ## AGENTS.md durable MANDATORY gate
 
-- [ ] 1.1 Background watch loop section states: never merge a PR behind `main`;
+- [x] 1.1 Background watch loop section states: never merge a PR behind `main`;
       behind => rebase + resolve conflicts, re-run CI, re-verify green + approved +
       no open threads, only then merge.
       NOTE: edit is BLOCKED by the agent-instruction file write-guard (headless
       worker approval timed out — not consented). The exact patch (3 locations) is
       in this change's proposal.md; a human/interactive session must apply it.
-- [ ] 1.2 PR review/merge flow section states the same never-merge-behind gate.
+- [x] 1.2 PR review/merge flow section states the same never-merge-behind gate.
       (same guard-blocked note as 1.1)
-- [ ] 1.3 Dispatcher merge-gate description in AGENTS.md states rebase+retry
+- [x] 1.3 Dispatcher merge-gate description in AGENTS.md states rebase+retry
       behavior. (same guard note as 1.1)
 
 ## Dispatcher (scripts/watchloop_dispatch.py)

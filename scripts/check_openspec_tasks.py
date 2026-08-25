@@ -99,12 +99,25 @@ def check_all(
     only: str | None = None, base: Path = CHANGES_DIR, verbose: bool = True
 ) -> int:
     """Check active changes (all, or just *only*). Returns # of failing changes."""
-    names = [only] if only else active_change_names(base)
-    if not names:
-        if only:
-            print(f"[openspec-tasks] {only}: no active tasks.md — not found")
+    if only:
+        # A specific, explicitly-requested change: must exist and be fully ticked.
+        f = tasks_file_for(only, base)
+        if f is None:
+            print(f"[openspec-tasks] FAIL {only}: no active tasks.md (archived/missing)")
             return 1
+        bad = unchecked_tasks(f)
+        if bad:
+            print(f"[openspec-tasks] FAIL {only}: unchecked task checkbox(es) at lines {bad}")
+            if verbose:
+                lines = f.read_text(encoding="utf-8").splitlines()
+                for ln in bad:
+                    if 1 <= ln <= len(lines):
+                        print(f"    L{ln}: {lines[ln-1].strip()}")
+            return 1
+        print(f"[openspec-tasks] OK {only}: all tasks checked")
         return 0
+
+    names = active_change_names(base)
     failures = 0
     for name in names:
         f = tasks_file_for(name, base)
@@ -122,6 +135,15 @@ def check_all(
                 for ln in bad:
                     if 1 <= ln <= len(lines):
                         print(f"    L{ln}: {lines[ln-1].strip()}")
+                    else:
+                        print(f"    L{ln}: (line number beyond file)")
+            else:
+                # still attempt to show the line for readability
+                lines = f.read_text(encoding="utf-8").splitlines()
+                for ln in bad:
+                    if 1 <= ln <= len(lines):
+                        print(f"    L{ln}: {lines[ln-1].strip()}")
+                        break
         else:
             print(f"[openspec-tasks] OK {name}: all tasks checked")
     return failures

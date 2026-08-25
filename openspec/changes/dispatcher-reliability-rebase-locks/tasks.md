@@ -41,5 +41,5 @@
 
 - [x] 3.1 `make test-unit` green (38 passed, incl. 13 new dispatcher tests).
 - [x] 3.2 `make openspec-validate NAME=dispatcher-reliability-rebase-locks` exit 0.
-- [ ] 3.3 Tick-off verification that the stale issue-#16 lock (PID dead) no
+- [x] 3.3 Tick-off verification that the stale issue-#16 lock (PID dead) no
       longer causes `worker already running ... skip` and a worker is resumed.

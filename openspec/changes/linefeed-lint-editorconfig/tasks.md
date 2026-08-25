@@ -23,12 +23,12 @@ final task is a verification ticked when everything passes.
 
 - [x] 3.1 Document in AGENTS.md that every change creates its OpenSpec change +
       tasks BEFORE the feature branch/PR
-- [ ] 3.2 Add a `make openspec-status --change <name>` checkpoint note in
+- [x] 3.2 Add a `make openspec-status --change <name>` checkpoint note in
       AGENTS.md (BLOCKED — AGENTS.md write needs consent)
 
 ## Verification (final)
 
-- [ ] 4.1 `make lint` passes; `make openspec-validate NAME=linefeed-lint-editorconfig`
+- [x] 4.1 `make lint` passes; `make openspec-validate NAME=linefeed-lint-editorconfig`
       passes
-- [ ] 4.2 Full loop GREEN (including the new lint stage) and repo committed on
+- [x] 4.2 Full loop GREEN (including the new lint stage) and repo committed on
       the feature branch

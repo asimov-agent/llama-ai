@@ -108,6 +108,9 @@ openspec-validate: ## openspec validate <NAME>  (fail-closed gate used by the lo
 	@test -n "$(NAME)" || { echo "Usage: make openspec-validate NAME=<change>"; exit 1; }
 	$(RUNTIME) run $(OS_OPTS) openspec validate $(NAME)
 
+openspec-tasks-check: ## Assert all ACTIVE OpenSpec changes have no unchecked task checkboxes (NAME=<change> to check one). Fails CI when a task is left `- [ ]`.
+	$(TEST_RUN) python scripts/check_openspec_tasks.py $(NAME)
+
 openspec-status: ## openspec status
 	$(RUNTIME) run $(OS_OPTS) openspec status
 
