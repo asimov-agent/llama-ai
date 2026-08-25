@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Download a GGUF into a tiered models folder with live progress + auto-resume/retry.
 
-Usage: hf_dl.py <repo_id> <filename> <dest_dir> <label>
+Usage: hf_download.py <repo_id> <filename> <dest_dir> <label>
 Reads HF_TOKEN from ~/.zshrc. Append progress to <dest_dir>/<label>.progress.log
 Uses HF_HUB_ENABLE_HF_TRANSFER=1 + HF_HUB_DISABLE_XET=1 for speed.
 Auto-retries on connection drop (rc!=0 while final .gguf absent), resuming the partial.
