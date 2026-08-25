@@ -209,6 +209,42 @@ real worktree → OpenSpec → code → PR lifecycle on the branch
 `feat/test-watchloop-verify-the-background-watch-loop-dr` — proof the loop is not
 just documented but actually drives a brand-new issue to a PR.
 
+### Choosing the worker model the loop uses
+
+Each cron-spawned worker is a `project-manager` Hermes session that drives one open
+issue to a PR. It uses an LLM whose choice defaults to the local GGUF model
+(`llm-local` on `:11434`, good for serving) but is **configurable** so the loop runs
+fast when you want it to.
+
+**Where it is set — two places (resolution order, first wins):**
+
+1. **Environment variables** (in the crontab / exported): `WATCHLOOP_WORKER_MODEL`
+   and `WATCHLOOP_WORKER_PROVIDER`.
+2. **The config file** `.watchloop/run/worker-model` — two lines, line 1 = model id,
+   line 2 = provider (blank = profile provider). This is a **local, gitignored** file.
+
+If both are empty, workers use the profile default (`llm-local`).
+
+**How to configure (recommended, uses the template):**
+
+```bash
+# copy the versioned template into the live (gitignored) config, then edit it
+cp scripts/worker-model.template .watchloop/run/worker-model
+```
+
+A built-in template lives at **`scripts/worker-model.template`** (tracked in git) and
+documents both options in place:
+
+- **llama.cpp / local GGUF** — set line 1 to `llm-local`, leave line 2 empty. Good
+  for offline/private jobs; slower for agentic driving (~170s/call on the 35B).
+- **Hosted / OpenRouter (recommended for speed)** — e.g. line 1
+  `deepseek/deepseek-v4-flash-0731`, line 2 `openrouter`. Makes the autonomous loop
+  drive issues to a PR quickly.
+
+The dispatcher reads this at startup and launches each worker with
+`hermes chat ... -m <MODEL> --provider <PROVIDER>`. Change the file (or the env vars)
+and the next cron tick picks it up.
+
 ---
 
 ## Layout

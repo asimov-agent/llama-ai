@@ -1,0 +1,34 @@
+# Worker-model override for the watch-loop dispatcher.
+#
+# This file is TEMPLATE — copy it into place as the LIVE config:
+#     cp scripts/worker-model.template .watchloop/run/worker-model
+# (.watchloop/ is gitignored, so the live config is a local, uncommitted file;
+#  this template is tracked in git so the documented options are versioned.)
+#
+# Format (2 lines):
+#   Line 1 = model id
+#   Line 2 = provider name (leave blank for the profile default provider)
+#
+# Resolution order in scripts/watchloop_dispatch.py (`_read_worker_model_config`),
+# high to low:
+#   1. env WATCHLOOP_WORKER_MODEL / WATCHLOOP_WORKER_PROVIDER (crontab/export)
+#   2. this config file (.watchloop/run/worker-model)
+#   3. profile default (llm-local) if both are empty
+#
+# The spawned worker's `hermes chat` then launches with
+# `-m <MODEL> --provider <PROVIDER>`.
+
+# --- OPTION A: llama.cpp / local GGUF model (default; slow for agentic work) ---
+# Serve a GGUF with the local llama-server then point workers at it. Empty lines
+# make the dispatcher fall back to the profile default (llm-local). Leave MODEL
+# blank / comment the next two lines to use the local model.
+# deepseek/deepseek-v4-flash-0731  <- uncomment nothing; see OPTION B
+# (for llama.cpp): set line 1 to `llm-local` and leave line 2 empty, e.g.:
+#   llm-local
+#   (blank provider => custom / localhost:11434)
+
+# ------------------------------------------------------------ OPTION B: hosted (recommended for speed) ---
+# Use a fast hosted model via OpenRouter. This is what makes the autonomous loop
+# drive issues to a PR quickly instead of stalling on the local 35B (~170s/call).
+deepseek/deepseek-v4-flash-0731
+openrouter
