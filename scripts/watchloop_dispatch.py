@@ -207,7 +207,10 @@ Per the issue body + AGENTS.md:
 1) OpenSpec change FIRST: cd {wd} && make openspec-new NAME={slug}. Write
    proposal.md/spec/tasks describing the change (docs-only => skip_specs:true).
 2) Implement in {wd} on {branch}.
-3) Validate (all via flock): openspec-validate NAME={slug} exit 0; lint; test-unit.
+3) STAGE FIRST, then Validate (all via flock): git -C {wd} add -A; then
+   openspec-validate NAME={slug} exit 0; lint-fix (scripts/lint_linefeeds.py --fix so
+   any fresh file's missing trailing newline is repaired NOW); lint; test-unit. Run lint
+   AGAIN after staging so freshly-written files are picked up by git ls-files.
 4) Keep issue body, OpenSpec change, and code/files in sync.
 5) Push: git -C {wd} push origin {branch} (use URL-embedded token from {REPO}/.env
    if the keyring token is revoked).
