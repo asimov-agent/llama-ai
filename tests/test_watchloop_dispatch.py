@@ -212,3 +212,63 @@ class TestMainSameTickSkip:
         # Issues 18 and 15 were resolved by a same-tick merge -> not spawned.
         # Issue 12 (not resolved) is spawned.
         assert spawned == [12], f"expected only orphan #12 spawned, got {spawned}"
+
+
+# --------------------------------------------------------------------------- #
+# ensure_worktree refreshes an existing worktree onto latest origin/main
+# --------------------------------------------------------------------------- #
+class TestEnsureWorktreeSync:
+    def test_existing_worktree_behind_is_rebased(self, tmp_path, monkeypatch):
+        """An existing worktree whose branch is behind origin/main must rebase."""
+        monkeypatch.setattr(wd, "REPO", str(tmp_path))
+        calls = []
+
+        # Existing worktree dir present at the EXACT path ensure_worktree computes.
+        wt = (tmp_path / ".." / "llama-ai-wt" / "always-sync").resolve()
+        wt.mkdir(parents=True, exist_ok=True)
+        real_isdir = os.path.isdir
+        monkeypatch.setattr(os.path, "isdir", lambda p: real_isdir(p) or str(p) == str(wt))
+
+        # Simulate git: fetch succeeds; merge-base => behind (rc 1); rebase rc 0.
+        def fake_run(argv, capture_output=False, text=False, **k):
+            calls.append(argv)
+            class R:
+                stderr = ""
+                def __init__(self, rc):
+                    self.returncode = rc
+            if "merge-base" in argv:
+                return R(1)          # behind -> triggers rebase
+            if "rebase" in argv:
+                return R(0)
+            return R(0)              # fetch/add/etc success
+        monkeypatch.setattr(wd.subprocess, "run", fake_run)
+
+        wd.ensure_worktree("feat/always-sync", "always-sync")
+
+        assert any("--prune" in c for c in calls), "must git fetch --all --prune"
+        assert any("rebase" in c for c in calls), "must rebase a behind worktree onto origin/main"
+
+    def test_existing_worktree_up_to_date_no_rebase(self, tmp_path, monkeypatch):
+        """An existing worktree already at/after origin/main must NOT rebase."""
+        monkeypatch.setattr(wd, "REPO", str(tmp_path))
+        calls = []
+        # Existing worktree dir present at the EXACT path ensure_worktree computes.
+        wt = (tmp_path / ".." / "llama-ai-wt" / "fresh").resolve()
+        wt.mkdir(parents=True, exist_ok=True)
+        real_isdir = os.path.isdir
+        monkeypatch.setattr(os.path, "isdir", lambda p: real_isdir(p) or str(p) == str(wt))
+
+        def fake_run(argv, capture_output=False, text=False, **k):
+            calls.append(argv)
+            class R:
+                stderr = ""
+                def __init__(self, rc):
+                    self.returncode = rc
+            if "rebase" in argv:
+                raise AssertionError("rebase should NOT run when up to date")
+            return R(0)  # merge-base rc 0 => up to date
+        monkeypatch.setattr(wd.subprocess, "run", fake_run)
+
+        wd.ensure_worktree("feat/fresh", "fresh")
+        assert any("--prune" in c for c in calls), "must fetch --all --prune"
+        assert not any("rebase" in c for c in calls), "no rebase when already current"

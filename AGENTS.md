@@ -191,12 +191,10 @@ Every piece of work (bug fix, feature, tooling, docs) MUST be developed on a
 merged into `main` through a **pull request**. This matches the remote's branch
 protection (direct pushes to `main` are not allowed for new work).
 
-**ALWAYS REBASE when the branch goes stale — never sit "behind main".**
-On session start, and any time you resume/continue work on a feature branch,
-you MUST bring it up to date with the remote tip yourself (do not wait for a
-human or leave it behind):
+**ALWAYS SYNC TO LATEST `main` — EVERY time, before and during any work (MANDATORY, unconditional).** This is NOT optional and NOT "on resume only" — it runs at the START of every session AND before you create/resume a worktree AND immediately before you push/PR:
 
 ```bash
+git fetch --all --prune
 git fetch origin main
 git merge-base --is-ancestor origin/main HEAD 2>/dev/null \
   || git rebase origin/main        # if not already at/after main, rebase onto it
@@ -204,6 +202,17 @@ git merge-base --is-ancestor origin/main HEAD 2>/dev/null \
 # git add, git rebase --continue) — resolving conflicts on the branch is YOUR job,
 # not something to hand back.
 ```
+
+- **Before creating a worktree**, FIRST pull the latest main so the branch is cut from the newest tip:
+  ```bash
+  cd /Users/andy/repository/git/llama-ai && git fetch origin main
+  git worktree add -b feat/<kebab> ../llama-ai-wt/<kebab> origin/main
+  ```
+- **Before resuming/using an existing worktree**, refresh it against the latest remote main BEFORE touching any code — never start from a stale tip:
+  ```bash
+  cd ../llama-ai-wt/<kebab> && git fetch origin main && git merge-base --is-ancestor origin/main HEAD 2>/dev/null || git rebase origin/main
+  ```
+- **Right before you push / open a PR**, re-run the fetch+rebase above ONE final time so the PR is never behind.
 
 - **Why:** `main` moves whenever another PR merges. A branch that falls behind
   `main` will be rejected at the merge gate (issue #9: never merge a PR that is
