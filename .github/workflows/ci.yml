@@ -61,18 +61,23 @@ jobs:
         run: make test-clean
 
   # ------------------------------------------------------------------
-  # agents-read: AGENTS.md must not match Hermes context-file threat patterns
+  # agents-read: AGENTS.md must not match Hermes context-file threat patterns.
+  # Runs on its OWN python:3.12 image (hermes-agent needs Python >=3.11) so it
+  # does NOT bump the heavy 3.10 test image and avoids its dep conflicts. The
+  # guard imports the REAL hermes-agent PyPI package (a declared dependency in
+  # tools/requirements-dev.in), never a vendored copy.
   # ------------------------------------------------------------------
   agents-read:
     runs-on: ubuntu-latest
+    container: python:3.12-slim
     steps:
       - uses: actions/checkout@v4
-      - name: Build test image (incl. hermes-agent)
-        run: make test-image
-      - name: make test-agents-read
-        run: make test-agents-read
-      - name: Prune orphaned test containers
-        run: make test-clean
+      - name: Install hermes-agent + pytest (hermes is a declared PyPI dep)
+        run: pip install --no-cache-dir "hermes-agent==0.19.0" pytest
+      - name: Scan AGENTS.md (fail-closed guard)
+        run: python scripts/scan_agents_md.py AGENTS.md
+      - name: Unit-test the guard (edge cases + permutation corpus; --noconftest to skip the gguf venv root conftest)
+        run: python -m pytest tests/test_agents_read.py --noconftest -p no:cacheprovider -q
 
   # ------------------------------------------------------------------
   # openspec: validate the active OpenSpec change (make openspec-validate)

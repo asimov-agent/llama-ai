@@ -7,3 +7,8 @@
 #   make -C tools venv-dev-install            # install runtime + dev deps into venv
 pytest==8.3.5
 pytest-cov==5.0.0
+# Hermes Agent (PyPI): provides the canonical `tools.threat_patterns` module used
+# by `make test-agents-read` to guard AGENTS.md against context-file threat
+# patterns. Pinned to a released version (requires Python >=3.11). The guard
+# imports this installed module; it is a real 3rd-party dependency, NOT vendored.
+hermes-agent==0.19.0
