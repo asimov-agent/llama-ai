@@ -38,6 +38,31 @@ RUN = f"{REPO}/.watchloop/run"
 API = "https://api.github.com/repos/asimov-agent/llama-ai"
 HERMES = "/Users/andy/.local/bin/hermes"
 
+# Worker model override. The profile default is `llm-local` (the local 35B), which
+# is correct for serving but SLOW for agentic driving (~170s/call in practice),
+# so spawned workers can stall far behind the loop cadence.
+#
+# Resolution order (so it is robust even when the crontab can't carry env vars):
+#   1. env WATCHLOOP_WORKER_MODEL / WATCHLOOP_WORKER_PROVIDER (crontab/export), then
+#   2. the file .watchloop/worker-model (two lines: MODEL, PROVIDER), in-repo,
+#      editable without sudo / without fighting a wedged crontab.
+# Empty = use the profile's configured default (keeps existing behaviour).
+def _read_worker_model_config() -> tuple[str, str]:
+    cfg = os.path.join(RUN, "worker-model")
+    try:
+        with open(cfg) as f:
+            lines = [ln.strip() for ln in f if ln.strip() and not ln.strip().startswith("#")]
+        model = lines[0] if lines else ""
+        provider = lines[1] if len(lines) > 1 else ""
+        return model, provider
+    except OSError:
+        return "", ""
+
+
+_CFG_MODEL, _CFG_PROVIDER = _read_worker_model_config()
+WORKER_MODEL = os.environ.get("WATCHLOOP_WORKER_MODEL", "").strip() or _CFG_MODEL
+WORKER_PROVIDER = os.environ.get("WATCHLOOP_WORKER_PROVIDER", "").strip() or _CFG_PROVIDER
+
 os.makedirs(LOGS, exist_ok=True)
 os.makedirs(RUN, exist_ok=True)
 
@@ -369,6 +394,8 @@ def spawn_worker(issue) -> None:
     cmd = (
         f"cd {wd} && HERMES_PROFILE=project-manager {HERMES} chat "
         f"--query-file {prompt_file} -t terminal,file,web --yolo -Q "
+        f"{f'-m {WORKER_MODEL} ' if WORKER_MODEL else ''}"
+        f"{f'--provider {WORKER_PROVIDER} ' if WORKER_PROVIDER else ''}"
         f">> {branch_log} 2>&1"
     )
     log(f"  issue#{num}: spawning worker branch={branch} log={branch_log}")

@@ -362,3 +362,49 @@ class TestTickDedup:
         b1 = wd._current_tick()
         assert b1.startswith("tick-")
         assert wd._current_tick() == b1  # stable within the interval
+
+
+# --------------------------------------------------------------------------- #
+# configurable worker model (issue #31): resolve from env OR .watchloop config
+# --------------------------------------------------------------------------- #
+class TestWorkerModelConfig:
+    def test_read_config_file(self, tmp_path, monkeypatch):
+        """_read_worker_model_config reads MODEL/PROVIDER from the config file."""
+        monkeypatch.setattr(wd, "RUN", str(tmp_path))
+        cfg = tmp_path / "worker-model"
+        cfg.write_text("my/fast-model\nmyprovider\n")
+        assert wd._read_worker_model_config() == ("my/fast-model", "myprovider")
+
+    def test_config_missing_returns_empty(self, tmp_path, monkeypatch):
+        """No config file -> ('', '') so the profile default is used."""
+        monkeypatch.setattr(wd, "RUN", str(tmp_path))
+        assert wd._read_worker_model_config() == ("", "")
+
+    def test_config_ignores_comments_and_blank(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(wd, "RUN", str(tmp_path))
+        cfg = tmp_path / "worker-model"
+        cfg.write_text("# comment\n\ndeepseek/x\nopenrouter\n")
+        assert wd._read_worker_model_config() == ("deepseek/x", "openrouter")
+
+    def test_build_command_with_model_override(self, tmp_path, monkeypatch, capsys):
+        """spawn_worker's launch cmd includes -m <model> --provider <provider>."""
+        monkeypatch.setattr(wd, "RUN", str(tmp_path))
+        monkeypatch.setattr(wd, "LOGS", str(tmp_path / "logs"))
+        monkeypatch.setattr(wd, "REPO", str(tmp_path))
+        (tmp_path / "logs").mkdir()
+        # stub subprocess.Popen to capture the command
+        captured = {}
+        class FakeP:
+            pid = 4242
+        class FakeSub:
+            def Popen(self, argv, **kw):
+                captured["cmd"] = argv[2]
+                return FakeP()
+        monkeypatch.setattr(wd, "subprocess", FakeSub())
+        monkeypatch.setattr(wd, "ensure_worktree", lambda *a, **k: f"{tmp_path}/wt")
+        monkeypatch.setattr(wd, "WORKER_MODEL", "deepseek/fast")
+        monkeypatch.setattr(wd, "WORKER_PROVIDER", "openrouter")
+        wd.spawn_worker({"number": 1, "title": "m"})
+        cmd = captured["cmd"]
+        assert "-m deepseek/fast" in cmd, cmd
+        assert "--provider openrouter" in cmd, cmd
