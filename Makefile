@@ -148,6 +148,18 @@ test-clean: ## Remove left-over/stopped orphaned containers of the test image (i
 test-unit: ## Hermetic unit tests (containerized) — includes the lint regression test
 	$(TEST_RUN) python -m pytest tests/test_llama_ai.py tests/test_lint_linefeeds.py tests/test_watchloop_dispatch.py -p no:cacheprovider -q
 
+test-agents-read: ## Guard: AGENTS.md must not match Hermes context-file threat patterns (fail-closed). Host-side: uses a Python >=3.11 that has hermes-agent installed (a PyPI dep, tools/requirements-dev.in). Not containerized, to avoid bumping the 3.10 test image.
+	@echo "==> test-agents-read: scanning AGENTS.md with the installed hermes-agent threat scanner"
+	@AR=; for py in python3.12 python3.11; do \
+	  if command -v $$py >/dev/null 2>&1 && $$py -c "import tools.threat_patterns" 2>/dev/null; then AR=$$py; break; fi; \
+	done; \
+	if [ -z "$$AR" ]; then \
+	  echo "ERROR: no Python >=3.11 with hermes-agent installed found. Add hermes-agent==0.19.0 to tools/requirements-dev.in and install (pip install -r tools/requirements-dev.txt), or run in the CI agents-read job."; \
+	  exit 1; \
+	fi; \
+	echo "  using $$AR"; \
+	$$AR scripts/scan_agents_md.py AGENTS.md
+
 test-install: ## Host install tests (containerized) — skips cleanly without artifacts
 	$(TEST_RUN) python -m pytest tests/test_install.py -p no:cacheprovider -q
 
@@ -183,7 +195,7 @@ loop-harness: ## Loop runner (host orchestration): image->download->lint->unit->
 
 # Run every verification step explicitly (Makefile-level chain, same order as
 # loop-harness). Fails fast on the first failing step.
-chained: test-unit test-install test-health test openspec-validate
+chained: test-unit test-agents-read test-install test-health test openspec-validate
 	@echo "All chain steps completed."
 
 uninstall: ## Remove the launcher + symlinks (leaves the venv)
