@@ -380,36 +380,85 @@ def spawn_worker(issue) -> None:
 
 
 # ---------------------------------------------------------------------- main
+TICK_LOCK = f"{RUN}/dispatch.tick.lock"
+
+
+def _tick_lock_acquire() -> bool:
+    """Acquire the per-tick dedup lock; return True if THIS tick should run.
+
+    The cron slot fires the dispatcher twice; only the first invocation
+    (winner of the atomic O_CREAT|O_EXCL) proceeds. A second concurrent call
+    sees the live-PID lock and returns False so main() logs [DEDUP] and exits.
+    A dead-PID (stale) lock from a killed mid-tick run is reclaimed.
+    """
+    try:
+        fd = os.open(TICK_LOCK, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except OSError:
+        fd = None
+    if fd is not None:
+        os.write(fd, str(os.getpid()).encode())
+        os.close(fd)
+        return True
+    # Lock exists. Is its owner alive?
+    try:
+        pid = int((open(TICK_LOCK).read() or "0").strip() or 0)
+    except (ValueError, OSError):
+        pid = 0
+    if pid_alive(pid):
+        return False  # another invocation is already running this tick
+    # Stale lock from a dead process: reclaim it atomically.
+    try:
+        os.remove(TICK_LOCK)
+        fd = os.open(TICK_LOCK, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(fd, str(os.getpid()).encode())
+        os.close(fd)
+    except OSError:
+        return False  # raced with another recoverer
+    return True
+
+
+def _tick_lock_release() -> None:
+    try:
+        os.remove(TICK_LOCK)
+    except OSError:
+        pass
+
+
 def main() -> None:
-    log("tick start")
-
-    prs = api("/pulls?state=open&per_page=100")
-    resolved_this_tick: set = set()
-    if isinstance(prs, list):
-        if "--dry" in sys.argv:
-            log(f"  [DRY] skipping merge gate ({len(prs)} open PRs)")
-        else:
-            resolved_this_tick = process_merge_gate(prs)
-    else:
-        log("  could not list PRs (API error); skipping merge gate")
-
-    issues = api("/issues?state=open&per_page=100")
-    if isinstance(issues, list):
-        for issue in issues:
-            if not isinstance(issue, dict) or "pull_request" in issue:
-                continue
-            num = issue["number"]
-            if num in resolved_this_tick:
-                log(f"  issue#{num}: resolved by PR merged this tick; no spawn")
-                continue
-            if issue_has_pr(num):
-                log(f"  issue#{num}: PR in flight, no spawn")
-                continue
+    if not _tick_lock_acquire():
+        log("[DEDUP] tick skipped: a previous invocation is already running this interval")
+        return
+    try:
+        log("tick start")
+        prs = api("/pulls?state=open&per_page=100")
+        resolved_this_tick: set = set()
+        if isinstance(prs, list):
             if "--dry" in sys.argv:
-                log(f"  issue#{num}: [DRY] would spawn worker for '{issue['title']}'")
-                continue
-            spawn_worker(issue)
-    log("tick done")
+                log(f"  [DRY] skipping merge gate ({len(prs)} open PRs)")
+            else:
+                resolved_this_tick = process_merge_gate(prs)
+        else:
+            log("  could not list PRs (API error); skipping merge gate")
+
+        issues = api("/issues?state=open&per_page=100")
+        if isinstance(issues, list):
+            for issue in issues:
+                if not isinstance(issue, dict) or "pull_request" in issue:
+                    continue
+                num = issue["number"]
+                if num in resolved_this_tick:
+                    log(f"  issue#{num}: resolved by PR merged this tick; no spawn")
+                    continue
+                if issue_has_pr(num):
+                    log(f"  issue#{num}: PR in flight, no spawn")
+                    continue
+                if "--dry" in sys.argv:
+                    log(f"  issue#{num}: [DRY] would spawn worker for '{issue['title']}'")
+                    continue
+                spawn_worker(issue)
+        log("tick done")
+    finally:
+        _tick_lock_release()
 
 
 if __name__ == "__main__":
