@@ -22,6 +22,13 @@
 # Serve a GGUF with the local llama-server then point workers at it. Empty lines
 # make the dispatcher fall back to the profile default (llm-local). Leave MODEL
 # blank / comment the next two lines to use the local model.
+#
+# NOTE (issue #37): when the effective provider is LOCAL (empty provider, or
+# localhost/custom/llama.cpp), the dispatcher PROBES
+# http://127.0.0.1:11434/v1/models BEFORE spawning each worker and confirms the
+# model id is listed. If the local llama-server is down (or hasn't finished
+# loading), the spawn is SKIPPED cleanly — one log line per issue, no doomed
+# worker, no lock, no worktree — and retried on the next 20-min tick.
 # deepseek/deepseek-v4-flash-0731  <- uncomment nothing; see OPTION B
 # (for llama.cpp): set line 1 to `llm-local` and leave line 2 empty, e.g.:
 #   llm-local

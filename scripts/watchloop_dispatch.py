@@ -28,6 +28,13 @@ worktree under ../llama-ai-wt/ whose HEAD is an ancestor of origin/main (fully
 merged). In-flight worktrees and worktrees whose worker is still alive are never
 touched; `--dry` reports what would be cleaned without deleting.
 
+PRE-SPAWN MODEL PROBE (issue #37): when the effective worker provider is local
+(empty/localhost/custom/llama.cpp), the dispatcher GETs
+http://127.0.0.1:11434/v1/models and confirms the worker model is listed BEFORE
+spawning. A down/unreachable server (or unlisted model) skips the spawn cleanly
+(log + continue: no worker, no lock, no prompt file, no worktree) instead of
+burning a doomed worker. Hosted providers (e.g. openrouter) are never probed.
+
 No worker time limit => a big issue may span ticks and resume from its own log.
 """
 
@@ -71,6 +78,50 @@ def _read_worker_model_config() -> tuple[str, str]:
 _CFG_MODEL, _CFG_PROVIDER = _read_worker_model_config()
 WORKER_MODEL = os.environ.get("WATCHLOOP_WORKER_MODEL", "").strip() or _CFG_MODEL
 WORKER_PROVIDER = os.environ.get("WATCHLOOP_WORKER_PROVIDER", "").strip() or _CFG_PROVIDER
+
+# Effective model id the spawned worker will use. When no override is set the
+# profile default is `llm-local` (the local 35B on the llama.cpp server), so the
+# pre-spawn probe (issue #37) checks THAT id against the local server.
+WORKER_MODEL_EFFECTIVE = WORKER_MODEL or "llm-local"
+
+# Providers that mean "the worker talks to the LOCAL llama.cpp server" (the one
+# we can probe over loopback). An EMPTY provider falls back to the profile
+# default, which is the local `custom`/llama.cpp provider — so empty is local.
+LOCAL_PROVIDERS = {"", "localhost", "custom", "llama.cpp"}
+
+# Local llama.cpp OpenAI-compatible endpoint. 127.0.0.1 (not `localhost`, which
+# can resolve to IPv6 ::1 inside some host setups), matching the serving config.
+LOCAL_MODEL_URL = "http://127.0.0.1:11434/v1/models"
+
+
+def effective_provider_is_local() -> bool:
+    """True if the effective worker provider targets the local llama.cpp server."""
+    return WORKER_PROVIDER.strip().lower() in LOCAL_PROVIDERS
+
+
+def probe_worker_model(model: str, url: str = LOCAL_MODEL_URL, timeout: int = 10) -> bool:
+    """Pre-spawn probe (issue #37): is the local worker model actually served?
+
+    GETs the llama.cpp OpenAI-compatible `v1/models` endpoint and returns True
+    iff *model* appears in the returned `data[].id` (or `model`) list. Fails
+    CLOSED — unreachable, non-2xx, non-JSON body, or model not listed all
+    return False — and NEVER raises, so a down server skips the spawn cleanly
+    instead of wedging the whole tick. Isolated to this one function so unit
+    tests can monkeypatch it (or stub `urllib.request.urlopen`) hermetically.
+    """
+    try:
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode() or "{}")
+    except Exception:
+        return False
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, list):
+        return False
+    for entry in data:
+        if isinstance(entry, dict) and (entry.get("id") == model or entry.get("model") == model):
+            return True
+    return False
 
 os.makedirs(LOGS, exist_ok=True)
 os.makedirs(RUN, exist_ok=True)
@@ -653,6 +704,16 @@ def main() -> None:
                 if issue_has_pr(num):
                     log(f"  issue#{num}: PR in flight, no spawn")
                     continue
+                # Pre-spawn model probe (issue #37): if the worker model is served
+                # by the LOCAL llama.cpp server and that server is down, fail
+                # closed and skip cleanly — no doomed worker, no lock, no prompt
+                # file, no worktree. Hosted providers (e.g. openrouter) are
+                # unaffected: no local port is probed.
+                if effective_provider_is_local():
+                    if not probe_worker_model(WORKER_MODEL_EFFECTIVE):
+                        log(f"  issue#{num}: worker model {WORKER_MODEL_EFFECTIVE} "
+                            f"unreachable on {LOCAL_MODEL_URL} — skipping spawn")
+                        continue
                 if "--dry" in sys.argv:
                     log(f"  issue#{num}: [DRY] would spawn worker for '{issue['title']}'")
                     continue

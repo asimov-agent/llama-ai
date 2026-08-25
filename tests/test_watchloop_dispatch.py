@@ -237,11 +237,15 @@ class TestMainSameTickSkip:
              {"number": 12, "title": "orphan"}]
         ))
         monkeypatch.setattr(wd, "sys", type("S", (), {"argv": ["watchloop_dispatch.py"]})())
+        monkeypatch.setattr(wd, "TICK_LOCK", str(tmp_path / "dispatch.tick.lock"))
         monkeypatch.setattr(wd, "process_merge_gate", fake_gate)
         # The cleanup sweep does real git on the host repo; stub it hermetic here
         # (its own behaviour is covered in TestCleanupMergedWorktrees).
         monkeypatch.setattr(wd, "cleanup_merged_worktrees", lambda dry=False: set())
         monkeypatch.setattr(wd, "issue_has_pr", lambda n: False)
+        # issue #37: stub the pre-spawn model probe so this hermetic test never
+        # touches the local llama-server.
+        monkeypatch.setattr(wd, "probe_worker_model", lambda m, **k: True)
         monkeypatch.setattr(wd, "spawn_worker", fake_spawn)
 
         wd.main()
@@ -438,6 +442,136 @@ class TestWorkerModelConfig:
         cmd = captured["cmd"]
         assert "-m deepseek/fast" in cmd, cmd
         assert "--provider openrouter" in cmd, cmd
+
+
+# --------------------------------------------------------------------------- #
+# pre-spawn worker-model probe (issue #37): skip cleanly when local server down
+# --------------------------------------------------------------------------- #
+class TestPreSpawnProbe:
+    """main() must probe the local worker-model endpoint before spawning and
+    skip cleanly (no worker, no lock) when it is down."""
+
+    def _patch_env(self, tmp_path, monkeypatch, spawned):
+        monkeypatch.setattr(wd, "RUN", str(tmp_path))
+        monkeypatch.setattr(wd, "LOGS", str(tmp_path / "logs"))
+        monkeypatch.setattr(wd, "REPO", str(tmp_path))
+        monkeypatch.setattr(wd, "TICK_LOCK", str(tmp_path / "dispatch.tick.lock"))
+        (tmp_path / "logs").mkdir()
+        monkeypatch.setattr(wd, "WORKER_MODEL", "")
+        monkeypatch.setattr(wd, "WORKER_MODEL_EFFECTIVE", "llm-local")
+        monkeypatch.setattr(wd, "api", lambda path, *a, **k: (
+            [] if "pulls" in path
+            else [{"number": 12, "title": "orphan"}]
+        ))
+        monkeypatch.setattr(wd, "sys", type("S", (), {"argv": ["watchloop_dispatch.py"]})())
+        monkeypatch.setattr(wd, "process_merge_gate", lambda prs: set())
+        monkeypatch.setattr(wd, "cleanup_merged_worktrees", lambda dry=False: set())
+        monkeypatch.setattr(wd, "issue_has_pr", lambda n: False)
+        monkeypatch.setattr(wd, "ensure_worktree", lambda *a, **k: f"{tmp_path}/wt")
+        monkeypatch.setattr(wd, "subprocess", _FakeSubprocess(spawned))
+        return monkeypatch
+
+    def test_local_reachable_spawns(self, tmp_path, monkeypatch):
+        """(a) local model reachable -> spawn proceeds."""
+        spawned: list = []
+        mp = self._patch_env(tmp_path, monkeypatch, spawned)
+        mp.setattr(wd, "WORKER_PROVIDER", "")            # empty => local
+        mp.setattr(wd, "probe_worker_model", lambda m, **k: True)
+        wd.main()
+        assert len(spawned) == 1, "reachable local model must spawn"
+        assert (tmp_path / "worker-feat_orphan.running").exists(), "lock written on spawn"
+
+    def test_local_unreachable_skips_cleanly(self, tmp_path, monkeypatch, capsys):
+        """(b) local model unreachable -> skipped, NO lock file, log emitted."""
+        spawned: list = []
+        mp = self._patch_env(tmp_path, monkeypatch, spawned)
+        mp.setattr(wd, "WORKER_PROVIDER", "custom")      # local
+        mp.setattr(wd, "probe_worker_model", lambda m, **k: False)
+        wd.main()
+        assert len(spawned) == 0, "unreachable local model must NOT spawn"
+        assert not (tmp_path / "worker-feat_orphan.running").exists(), (
+            "no lock file may be created when the probe fails"
+        )
+        assert not (tmp_path / "worker-feat_orphan.prompt").exists(), (
+            "no prompt file may be written when the probe fails"
+        )
+        out = capsys.readouterr().out
+        assert "issue#12: worker model llm-local unreachable on" in out, out
+        assert "skipping spawn" in out, out
+
+    def test_hosted_provider_no_probe(self, tmp_path, monkeypatch):
+        """(c) hosted provider (openrouter) -> no local probe attempted."""
+        spawned: list = []
+        mp = self._patch_env(tmp_path, monkeypatch, spawned)
+        mp.setattr(wd, "WORKER_PROVIDER", "openrouter")  # hosted
+        calls = []
+        mp.setattr(wd, "probe_worker_model",
+                   lambda m, **k: calls.append(m) or True)
+        wd.main()
+        assert len(spawned) == 1, "hosted provider must still spawn"
+        assert calls == [], f"hosted provider must NOT call the local probe, got {calls}"
+
+    def test_effective_provider_is_local_classification(self, monkeypatch):
+        monkeypatch.setattr(wd, "WORKER_PROVIDER", "")
+        assert wd.effective_provider_is_local() is True
+        monkeypatch.setattr(wd, "WORKER_PROVIDER", "Custom")
+        assert wd.effective_provider_is_local() is True
+        monkeypatch.setattr(wd, "WORKER_PROVIDER", "llama.cpp")
+        assert wd.effective_provider_is_local() is True
+        monkeypatch.setattr(wd, "WORKER_PROVIDER", "localhost")
+        assert wd.effective_provider_is_local() is True
+        monkeypatch.setattr(wd, "WORKER_PROVIDER", "openrouter")
+        assert wd.effective_provider_is_local() is False
+
+
+class _FakeUrn:
+    """Minimal context-manager stand-in for urllib.request.urlopen."""
+
+    def __init__(self, body: bytes):
+        self._body = body
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class TestProbeWorkerModel:
+    """probe_worker_model parses the v1/models listing hermetically (stubbed
+    urlopen; no real network)."""
+
+    def _patch_urlopen(self, monkeypatch, body: bytes):
+        monkeypatch.setattr(wd.urllib.request, "urlopen",
+                            lambda req, timeout=10: _FakeUrn(body))
+
+    def test_model_listed_returns_true(self, monkeypatch):
+        body = b'{"data":[{"id":"llm-local","object":"model"}]}'
+        self._patch_urlopen(monkeypatch, body)
+        assert wd.probe_worker_model("llm-local") is True
+
+    def test_model_not_listed_returns_false(self, monkeypatch):
+        body = b'{"data":[{"id":"other-model"}]}'
+        self._patch_urlopen(monkeypatch, body)
+        assert wd.probe_worker_model("llm-local") is False
+
+    def test_model_field_also_accepted(self, monkeypatch):
+        body = b'{"data":[{"model":"llm-local"}]}'
+        self._patch_urlopen(monkeypatch, body)
+        assert wd.probe_worker_model("llm-local") is True
+
+    def test_connection_error_returns_false_not_raise(self, monkeypatch):
+        def boom(req, timeout=10):
+            raise OSError("connection refused")
+        monkeypatch.setattr(wd.urllib.request, "urlopen", boom)
+        assert wd.probe_worker_model("llm-local") is False
+
+    def test_non_json_body_returns_false(self, monkeypatch):
+        self._patch_urlopen(monkeypatch, b"<html>502 Bad Gateway</html>")
+        assert wd.probe_worker_model("llm-local") is False
 
 
 # --------------------------------------------------------------------------- #
