@@ -332,7 +332,19 @@ def spawn_worker(issue) -> None:
     branch_log = f"{LOGS}/feat-{slug}.log"
     lk = f"{RUN}/worker-{branch.replace('/', '_')}.running"
 
-    if os.path.exists(lk):
+    # ATOMIC lock acquire: os.open with O_CREAT|O_EXCL is an atomic
+    # check-and-create — exactly one of N concurrent dispatchers wins, the
+    # rest get EEXIST. This closes the TOCTOU race where two dispatchers both
+    # pass os.path.exists(lk) and both spawn a worker (issue #23 doubled tick).
+    # We hold the lock file open until the worker's real PID is recorded.
+    lk_fd = None
+    try:
+        lk_fd = os.open(lk, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except OSError:
+        lk_fd = None  # lock already exists -> owned by a (live or stale) worker
+
+    if lk_fd is None:
+        # Lock exists. Check whether the owner PID is alive.
         try:
             live_pid = int((open(lk).read() or "0").strip() or 0)
         except (ValueError, OSError):
@@ -340,11 +352,16 @@ def spawn_worker(issue) -> None:
         if pid_alive(live_pid):
             log(f"  issue#{num}: worker already running (pid={live_pid}, {lk}); skip")
             return
-        log(f"  issue#{num}: stale lock pid={live_pid} dead; removing + resuming worker")
+        # Stale lock from a dead worker: someone must reclaim it. Remove then
+        # re-create with O_EXCL. If another dispatcher wins the race, skip.
         try:
             os.remove(lk)
+            lk_fd = os.open(lk, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except OSError:
-            pass
+            log(f"  issue#{num}: lock re-acquired elsewhere; skip")
+            return
+        log(f"  issue#{num}: stale lock pid={live_pid} dead; removing + resuming worker")
+
     ensure_worktree(branch, slug)
     prompt_file = f"{RUN}/worker-{branch.replace('/', '_')}.prompt"
     with open(prompt_file, "w") as f:
@@ -358,8 +375,8 @@ def spawn_worker(issue) -> None:
     proc = subprocess.Popen(["/bin/bash", "-lc", cmd], env=dict(os.environ))
     # Record the worker child PID (bash that waits on hermes chat), not our own,
     # so the lock reflects a real worker and a dead PID is detectable next tick.
-    with open(lk, "w") as f:
-        f.write(str(proc.pid))
+    os.write(lk_fd, str(proc.pid).encode())
+    os.close(lk_fd)
 
 
 # ---------------------------------------------------------------------- main
