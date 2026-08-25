@@ -350,6 +350,33 @@ class TestTickDedup:
         assert wd._tick_lock_acquire() is True, "must reclaim stale/foreign lock"
         assert (tmp_path / "dispatch.tick.lock").exists()
 
+    def test_same_bucket_dead_owner_still_dedups(self, tmp_path, monkeypatch):
+        """A SAME-bucket lock whose owner has FINISHED (dead pid) must still dedup.
+
+        Regression for the live-test finding (issue #30): a same-bucket re-fire
+        lands AFTER the first cron process already exited, so its pid is dead.
+        The durable design holds the lock for the WHOLE interval, so a dead
+        same-bucket owner must NOT be reclaimed -- reclaiming it re-runs the
+        tick (the #25 phantom double). Only an OLDER bucket is stale.
+        """
+        self._patch(tmp_path, monkeypatch)
+        bucket = wd._current_tick()
+        # A previous invocation acquired this interval and then exited (pid dead).
+        (tmp_path / "dispatch.tick.lock").write_text(f"{bucket}\n999999999\n")
+        assert wd._tick_lock_acquire() is False, (
+            "a finished same-bucket owner is a completed tick -> must dedup, not re-run"
+        )
+        # The (dead owner's) lock is left in place until the bucket changes.
+        assert (tmp_path / "dispatch.tick.lock").read_text().splitlines()[0] == bucket
+
+    def test_older_bucket_dead_owner_is_reclaimed(self, tmp_path, monkeypatch):
+        """An OLDER bucket with a dead owner is a finished prior interval -> reclaim."""
+        self._patch(tmp_path, monkeypatch)
+        wd._current_tick()  # ensure bucket is established
+        (tmp_path / "dispatch.tick.lock").write_text("tick-0\n999999999\n")
+        assert wd._tick_lock_acquire() is True
+        assert wd._read_lock_owner()[0] == wd._current_tick()
+
     def test_main_logs_dedup_not_tick_start_when_held(self, tmp_path, monkeypatch, capsys):
         """A same-interval re-fire of main() logs [DEDUP], no tick start."""
         self._patch(tmp_path, monkeypatch)
