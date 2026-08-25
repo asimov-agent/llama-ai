@@ -202,10 +202,15 @@ runs exactly once per slot, the dispatcher takes a **tick lock**
   whole bucket makes the dedup *durable*, independent of `main()`'s completion.
 - **A re-fire in the SAME interval is dedup'd.** `_tick_lock_acquire()` first
   attempts an atomic `O_CREAT|O_EXCL` create, then if the lock exists reads the
-  recorded `(bucket, pid)`. If that bucket equals the current bucket **and** the
-  PID is alive, it logs `[DEDUP] tick skipped: a previous invocation is already
-  running this interval` and `main()` returns WITHOUT a `tick start`. This is
-  exactly the "re-fire in the same interval AFTER the first tick finished" case.
+  recorded `(bucket, pid)`. If that bucket equals the current bucket, it logs
+  `[DEDUP] tick skipped: a previous invocation is already running this interval`
+  and `main()` returns WITHOUT a `tick start` — **regardless of whether the
+  recorded owner is still alive**. This is crucial: the first cron process
+  usually FINISHES (and exits) within seconds, so a same-bucket re-fire sees a
+  DEAD owner. Holding the whole interval means a finished same-bucket owner is
+  still a completed tick and MUST dedup; only an OLDER bucket (finished prior
+  interval) is reclaimed. This is exactly the "re-fire in the same interval
+  AFTER the first tick finished" case.
 - **A NEW interval reclaims.** When the wall clock crosses a 20-min boundary the
   bucket string changes. `_tick_lock_acquire()` sees an OLD-bucket (finished)
   owner and reclaims it atomically (`[DEDUP] reclaiming finished interval

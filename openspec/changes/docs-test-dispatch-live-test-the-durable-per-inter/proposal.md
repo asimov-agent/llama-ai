@@ -47,6 +47,15 @@ The problem today (#30):
   an in-flight worker; `dispatch.log` is inspected and must show **one tick block
   per slot** (no `[DEDUP]`-multiples doubling a tick start, no phantom double
   tick), closing issue #30's goal 1.
+- **Fix the durable-dedup hole the live test exposed** (new): the live test found
+  that a same-bucket re-fire was NOT dedup'd when it landed AFTER the first cron
+  process already exited. `_tick_lock_acquire` only dedup'd a same-bucket owner
+  that was still ALIVE; once the first process finished (`tick done`) and exited,
+  the follow-up cron fire saw a dead same-bucket PID, treated it as stale, and
+  re-ran the tick — the phantom double (#25) reintroduced. The fix: a same-bucket
+  lock (recorded owner bucket == current bucket) is dedup'd **regardless of owner
+  aliveness**, because the interval owns the lock until its bucket changes; only
+  an OLDER bucket is reclaimed. A regression test is added.
 
 ## Capabilities
 
@@ -70,9 +79,8 @@ background loop.
 
 ## Non-Goals
 
-- No change to `scripts/watchloop_dispatch.py`'s tick-dedup behaviour (it shipped
-  in PR #28) — only its durable design is DOCUMENTED and LIVE-VERIFIED here.
-- No change to the parallel-worktree model, the serialized-make lock, or worker
-  spawn / merge-gate logic.
-- `.watchloop/run/dispatch.log` (the verification source) is gitignored and is
-  NOT committed.
+- No change to the durable **hold-for-interval design intent** (shipped in PR #28)
+  — this change DOCUMENTS it, LIVE-VERIFIES it, and fixes one defect the live
+  test uncovered (same-bucket finished-owner must still dedup). The overall
+  parallel-worktree model, the serialized-make lock, and worker spawn /
+  merge-gate logic are untouched.

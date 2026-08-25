@@ -578,11 +578,16 @@ def _tick_lock_acquire() -> bool:
     try:
         fd = os.open(TICK_LOCK, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     except OSError:
-        # Lock exists. Is its owner THIS interval and live?
-        owner_bucket, owner_pid = _read_lock_owner()
-        if owner_bucket == bucket and pid_alive(owner_pid):
-            return False  # THIS interval already running -> dedup, no tick start
-        # Stale/foreign lock: remove + recreate atomically (race on recoverer).
+        # Lock exists. If the recorded owner holds THIS interval's bucket, dedup
+        # REGARDLESS of whether that owner is still alive. The interval owns the
+        # lock until its bucket changes, so even a FINISHED or CRASHED same-bucket
+        # owner must keep this tick duplicable -- reclaiming it would let a
+        # same-bucket re-fire re-run the tick (the #25 phantom double). Only an
+        # OLDER bucket (a finished prior interval) is stale for this tick.
+        owner_bucket, _owner_pid = _read_lock_owner()
+        if owner_bucket and owner_bucket == bucket:
+            return False  # THIS interval already ran/s owned -> dedup, no tick start
+        # Stale/foreign lock (different bucket, or no bucket): remove + recreate.
         try:
             os.remove(TICK_LOCK)
             fd = os.open(TICK_LOCK, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
