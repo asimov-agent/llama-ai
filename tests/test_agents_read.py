@@ -123,9 +123,17 @@ def test_guard_imports_installed_hermes_module():
     file_ = getattr(mod, "__file__", None)
     assert file_, "tools.threat_patterns has no __file__"
     pkg = Path(file_).resolve()
-    assert "site-packages" in str(pkg) or ".venv" in str(pkg), (
-        f"threat_patterns imported from unexpected location: {pkg}"
-    )
-    assert not str(pkg).startswith(str(REPO_ROOT)), (
+    s = str(pkg)
+    # CI (python:3.12 job) pip-installs hermes-agent -> site-packages.
+    # A dev host runs the guard from its Hermes venv (e.g. the
+    # ~/.hermes/hermes-agent install) -> path under that install, not under
+    # the repo. Both are legitimate "real dependency" locations; the only
+    # thing that must be rejected is a repo-local copy (vendored fallback).
+    assert (
+        "site-packages" in s
+        or ".venv" in s
+        or s.startswith(str(Path.home() / ".hermes"))
+    ), f"threat_patterns imported from unexpected location: {pkg}"
+    assert not s.startswith(str(REPO_ROOT)), (
         "must import the 3rd-party hermes-agent module, not a repo copy"
     )

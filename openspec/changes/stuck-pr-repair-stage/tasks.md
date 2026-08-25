@@ -20,7 +20,7 @@ Checklist of record. Ticked the moment verified.
 
 ## Verification
 
-- [ ] 3.1 `tests/test_watchloop_dispatch.py` ALL green in the containerized test image (60 passed).
-- [ ] 3.2 `make lint` passes (linefeed + trailing newlines).
-- [ ] 3.3 `make openspec-validate NAME=stuck-pr-repair-stage` passes.
-- [ ] 3.4 Commit + push a feature branch; open the PR; CI (incl. `agents-read`) green.
+- [x] 3.1 `tests/test_watchloop_dispatch.py` ALL green in the containerized test image (60 passed).
+- [x] 3.2 `make lint` passes (linefeed + trailing newlines).
+- [x] 3.3 `make openspec-validate NAME=stuck-pr-repair-stage` passes.
+- [x] 3.4 Commit + push a feature branch; open the PR; CI (incl. `agents-read`) green.
