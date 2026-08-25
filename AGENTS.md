@@ -312,7 +312,8 @@ to paste the comment into chat.
    gh pr list --head <current-branch>            # find the PR number
    gh pr view <N> --json reviews,comments        # PR-level comments + review summaries
    # all inline (diff) review threads + any replies:
-   curl -s -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+   _auth="Authorization: Bearer ${GITHUB_TOKEN}"
+   curl -s -H "$_auth" \
      "https://api.github.com/repos/<owner>/<repo>/pulls/<N>/comments" | python3 -m json.tool
    ```
    Review threads live in the **pull-request comments endpoint** (inline
@@ -331,7 +332,8 @@ to paste the comment into chat.
    reply on the SAME thread (`in_reply_to` the original comment) that states the
    fixing commit sha, the root cause, the change, and the verification:
    ```bash
-   curl -s -X POST -H "Authorization: Bearer ${GITHUB_TOKEN}" -H "Accept: application/vnd.github+json" \
+   _auth="Authorization: Bearer ${GITHUB_TOKEN}"
+   curl -s -X POST -H "$_auth" -H "Accept: application/vnd.github+json" \
      "https://api.github.com/repos/<owner>/<repo>/pulls/<N>/comments/<COMMENT_ID>/replies" \
      -d '{"body":"Fixed in <sha>: ..."}'
    ```
