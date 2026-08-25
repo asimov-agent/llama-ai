@@ -125,6 +125,40 @@ class TestSpawnWorkerLock:
         assert lk.exists()
         assert lk.read_text().strip() == "4242"
 
+    def test_atomic_lock_two_concurrent_spawns_single_winner(self, tmp_path, monkeypatch):
+        """Two concurrent spawn_worker calls must yield exactly ONE worker.
+
+        Regression for issue #23 (doubled cron tick -> TOCTOU race): the old
+        check-then-act (os.path.exists + open(w)) let two concurrent dispatchers
+        both spawn. The atomic O_CREAT|O_EXCL acquire must let only one win —
+        provided the winner's worker is alive (a dead PID is correctly treated
+        as stale and resumed, which is a separate concern).
+        """
+        monkeypatch.setattr(wd, "RUN", str(tmp_path))
+        monkeypatch.setattr(wd, "LOGS", str(tmp_path / "logs"))
+        monkeypatch.setattr(wd, "REPO", str(tmp_path))
+        (tmp_path / "logs").mkdir()
+        spawned: list = []
+        monkeypatch.setattr(wd, "ensure_worktree", lambda *a, **k: f"{tmp_path}/wt")
+
+        # First call wins, records OUR (live) pid as the worker.
+        # Make _FakeProc.pid = os.getpid() so the winner's recorded pid is alive.
+        class _LiveFakeProc:
+            pid = os.getpid()
+        class _LiveFakeSub:
+            def __init__(self, c): self.c = c
+            def Popen(self, argv, **kw):
+                self.c.append(argv)
+                return _LiveFakeProc()
+        monkeypatch.setattr(wd, "subprocess", _LiveFakeSub(spawned))
+
+        wd.spawn_worker({"number": 1, "title": "race"})   # winner -> live pid
+        wd.spawn_worker({"number": 1, "title": "race"})   # loser -> sees alive pid -> skip
+
+        assert len(spawned) == 1, f"expected 1 worker spawned, got {len(spawned)}"
+        lk = tmp_path / "worker-feat_race.running"
+        assert lk.read_text().strip() == str(os.getpid())
+
 
 class _FakeSubprocess:
     """Stand-in exposing `.Popen` that records invocations and yields a proc."""
