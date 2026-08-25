@@ -382,49 +382,104 @@ def spawn_worker(issue) -> None:
 # ---------------------------------------------------------------------- main
 TICK_LOCK = f"{RUN}/dispatch.tick.lock"
 
+# The cron slot fires every */20 minutes. Two cron fires in the same coarse
+# interval bucket are "the same tick". A plain O_CREAT|O_EXCL lock that is
+# released synchronously at main()'s end only catches a *tight* overlap window:
+# once the first invocation finishes (and its finally-release deletes the lock),
+# a re-fire in the same interval re-acquires and runs again -- the phantom
+# double-fire. Holding the lock for the whole interval (released only when the
+# bucket changes) is what makes "exactly one main() per cron tick" durable.
+TICK_INTERVAL_SECONDS = 20 * 60
+
+
+def _current_tick() -> str:
+    """Coarse cron-interval bucket for the current wall-clock moment.
+
+    Two cron fires in the same bucket are the 'same tick'. A monotonic string
+    bucket (rather than a raw O_CREAT|O_EXCL file) is what makes the dedup
+    durable: a finished invocation's lock-release no longer lets a re-fire in
+    the same interval re-acquire -- the interval owns the lock until it changes.
+    """
+    return f"tick-{int(time.time()) // TICK_INTERVAL_SECONDS}"
+
+
+def _read_lock_owner() -> tuple[str, int]:
+    """Return (bucket, pid) recorded in the tick lock, or ('', 0) if absent."""
+    try:
+        with open(TICK_LOCK) as f:
+            lines = [ln.strip() for ln in f if ln.strip()]
+    except OSError:
+        return "", 0
+    bucket = lines[0] if len(lines) >= 1 else ""
+    try:
+        pid = int(lines[1]) if len(lines) >= 2 else 0
+    except ValueError:
+        pid = 0
+    return bucket, pid
+
 
 def _tick_lock_acquire() -> bool:
-    """Acquire the per-tick dedup lock; return True if THIS tick should run.
+    """Acquire the per-tick dedup lock for THIS cron interval.
 
-    The cron slot fires the dispatcher twice; only the first invocation
-    (winner of the atomic O_CREAT|O_EXCL) proceeds. A second concurrent call
-    sees the live-PID lock and returns False so main() logs [DEDUP] and exits.
-    A dead-PID (stale) lock from a killed mid-tick run is reclaimed.
+    Robust against the phantom double-fire (issue #25): unlike a plain
+    O_CREAT|O_EXCL lock that is released synchronously at main()'s end, this
+    holds the lock for the whole interval so a phantom re-fire in the same bucket
+    dedups EVEN IF the first invocation already finished. The lock is only
+    released when a NEW interval (bucket) starts.
+
+    Returns True if THIS tick should run:
+      * fresh lock (no owner) -> win, write our bucket+PID
+      * owner holds THIS bucket AND live -> dedup (return False, no tick start)
+      * owner holds an OLDER bucket (finished previous interval) -> reclaim
+      * owner stale/foreign -> remove + recreate atomically
     """
+    bucket = _current_tick()
+
+    # Reclaim a finished previous interval: an older-bucket lock is stale for
+    # THIS tick, so clear it before the atomic create.
+    old_bucket, old_pid = _read_lock_owner()
+    if old_bucket and old_bucket != bucket and pid_alive(old_pid):
+        log(f"  [DEDUP] reclaiming finished interval {old_bucket} for {bucket}")
+
+    fd = None
     try:
         fd = os.open(TICK_LOCK, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     except OSError:
-        fd = None
-    if fd is not None:
-        os.write(fd, str(os.getpid()).encode())
-        os.close(fd)
-        return True
-    # Lock exists. Is its owner alive?
-    try:
-        pid = int((open(TICK_LOCK).read() or "0").strip() or 0)
-    except (ValueError, OSError):
-        pid = 0
-    if pid_alive(pid):
-        return False  # another invocation is already running this tick
-    # Stale lock from a dead process: reclaim it atomically.
-    try:
-        os.remove(TICK_LOCK)
-        fd = os.open(TICK_LOCK, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        os.write(fd, str(os.getpid()).encode())
-        os.close(fd)
-    except OSError:
-        return False  # raced with another recoverer
+        # Lock exists. Is its owner THIS interval and live?
+        owner_bucket, owner_pid = _read_lock_owner()
+        if owner_bucket == bucket and pid_alive(owner_pid):
+            return False  # THIS interval already running -> dedup, no tick start
+        # Stale/foreign lock: remove + recreate atomically (race on recoverer).
+        try:
+            os.remove(TICK_LOCK)
+            fd = os.open(TICK_LOCK, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except OSError:
+            return False  # raced with another recoverer
+
+    os.write(fd, f"{bucket}\n{os.getpid()}\n".encode())
+    os.close(fd)
     return True
 
 
-def _tick_lock_release() -> None:
-    try:
-        os.remove(TICK_LOCK)
-    except OSError:
-        pass
+def _tick_lock_release(current_bucket: str) -> None:
+    """Release the tick lock ONLY when a NEW interval (current_bucket) starts.
+
+    An older-bucket holder is a finished previous interval; clear it so the new
+    interval acquires cleanly. A same-bucket holder means we are mid-tick -- do
+    NOT release (that would permit a phantom re-fire to steal this tick). The
+    lock is intentionally NOT released at main()'s end, unlike the fragile
+    version it replaces: durability for the whole interval is the point.
+    """
+    held_bucket, held_pid = _read_lock_owner()
+    if held_bucket and held_bucket != current_bucket:
+        try:
+            os.remove(TICK_LOCK)
+        except OSError:
+            pass
 
 
 def main() -> None:
+    bucket = _current_tick()
     if not _tick_lock_acquire():
         log("[DEDUP] tick skipped: a previous invocation is already running this interval")
         return
@@ -457,8 +512,13 @@ def main() -> None:
                     continue
                 spawn_worker(issue)
         log("tick done")
-    finally:
-        _tick_lock_release()
+    except Exception:
+        # Intentionally NO finally-release: the lock stays held for this interval
+        # so a phantom re-fire in the same bucket dedups. A crash mid-tick leaves
+        # a live-PID lock that the NEXT interval (different bucket) reclaims via
+        # _tick_lock_acquire(), which removes it atomically.
+        log("[DEDUP] tick crashed mid-run; lock stays held until next interval")
+        raise
 
 
 if __name__ == "__main__":

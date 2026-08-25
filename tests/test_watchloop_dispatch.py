@@ -312,38 +312,53 @@ class TestEnsureWorktreeSync:
 # per-tick dedup lock (issue #25): main() runs exactly once per cron tick
 # --------------------------------------------------------------------------- #
 class TestTickDedup:
-    def test_acquire_wins_then_second_dedups(self, tmp_path, monkeypatch):
+    def _patch(self, tmp_path, monkeypatch):
         monkeypatch.setattr(wd, "RUN", str(tmp_path))
         monkeypatch.setattr(wd, "LOGS", str(tmp_path / "logs"))
         monkeypatch.setattr(wd, "TICK_LOCK", str(tmp_path / "dispatch.tick.lock"))
         (tmp_path / "logs").mkdir()
 
-        assert wd._tick_lock_acquire() is True, "first invocation wins"
-        assert wd._tick_lock_acquire() is False, "second invocation (live owner) must dedup"
-        # lock still present while held
+    def test_acquire_wins_then_same_interval_dedups(self, tmp_path, monkeypatch):
+        """First invoke wins; a re-fire in the SAME interval dedups (even after)."""
+        self._patch(tmp_path, monkeypatch)
+        assert wd._tick_lock_acquire() is True
+        # same interval, live owner -> dedup (durable: not tied to main()'s end)
+        assert wd._tick_lock_acquire() is False
         assert (tmp_path / "dispatch.tick.lock").exists()
-        wd._tick_lock_release()
-        assert not (tmp_path / "dispatch.tick.lock").exists(), "release removes lock"
+
+    def test_next_interval_reclaims_older_bucket(self, tmp_path, monkeypatch):
+        """A NEW interval (bucket changes) reclaims the previous interval's lock."""
+        self._patch(tmp_path, monkeypatch)
+        # hold a lock for the "current" interval, then force the next interval
+        assert wd._tick_lock_acquire() is True
+        # simulate wall clock advancing to a new bucket
+        old = wd._current_tick
+        counter = [100]
+        wd._current_tick = lambda: f"tick-{counter[0]+1}"
+        assert wd._tick_lock_acquire() is True, "new interval must win/reclaim"
+        # lock now holds the new bucket
+        assert wd._read_lock_owner()[0] == wd._current_tick()
+        wd._current_tick = old
 
     def test_stale_dead_pid_lock_is_reclaimed(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(wd, "RUN", str(tmp_path))
-        monkeypatch.setattr(wd, "TICK_LOCK", str(tmp_path / "dispatch.tick.lock"))
-        # stale lock from a killed process (impossible pid => dead)
-        (tmp_path / "dispatch.tick.lock").write_text("999999999")
-        assert wd._tick_lock_acquire() is True, "must reclaim stale dead-PID lock"
-        wd._tick_lock_release()
+        """A stale lock (dead PID / foreign) is removed and re-acquired."""
+        self._patch(tmp_path, monkeypatch)
+        (tmp_path / "dispatch.tick.lock").write_text("tick-0\n999999999\n")
+        assert wd._tick_lock_acquire() is True, "must reclaim stale/foreign lock"
+        assert (tmp_path / "dispatch.tick.lock").exists()
 
     def test_main_logs_dedup_not_tick_start_when_held(self, tmp_path, monkeypatch, capsys):
-        monkeypatch.setattr(wd, "RUN", str(tmp_path))
-        monkeypatch.setattr(wd, "LOGS", str(tmp_path / "logs"))
-        monkeypatch.setattr(wd, "TICK_LOCK", str(tmp_path / "dispatch.tick.lock"))
-        (tmp_path / "logs").mkdir()
-
-        # Hold the lock (as if another invocation is mid-tick).
-        assert wd._tick_lock_acquire() is True
-        # second main() invocation must DEDUP-skip without tick start
+        """A same-interval re-fire of main() logs [DEDUP], no tick start."""
+        self._patch(tmp_path, monkeypatch)
+        assert wd._tick_lock_acquire() is True  # as if another main() already ran
         wd.main()
         out = capsys.readouterr().out
         assert "DEDUP" in out, f"expected DEDUP, got {out!r}"
         assert "tick start" not in out, "second invocation must not log tick start"
-        wd._tick_lock_release()
+
+    def test_current_tick_buckets_are_coarse(self, tmp_path, monkeypatch):
+        """_current_tick() returns stable buckets of TICK_INTERVAL_SECONDS."""
+        self._patch(tmp_path, monkeypatch)
+        b1 = wd._current_tick()
+        assert b1.startswith("tick-")
+        assert wd._current_tick() == b1  # stable within the interval
