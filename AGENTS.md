@@ -160,6 +160,14 @@ that each tick:
    (OpenSpec-first → implement → validate → push → PR). Issues run in PARALLEL —
    they never serialize behind each other, and a worker resumes from its own log
    on later ticks.
+5. **Auto-cleans merged worktrees + branches (issue: auto-clean stale worktrees
+   after a PR merges).** After a PR merges to `main`, the dispatcher automatically
+   removes the now-stale worktree (`git worktree remove --force
+   ../llama-ai-wt/<kebab>`), the merged local `feat/<kebab>` branch, and the
+   per-worker `.watchloop/run/worker-feat_<kebab>.running/.prompt` +
+   `.watchloop/logs/feat-<kebab>.log` artifacts — so the loop leaves no dead
+   worktrees/branches behind. In-flight PR worktrees and live running workers are
+   NEVER touched.
 
 Parallel-safety rules (so concurrent workers never collide):
 - Every containerized `make` target (`openspec-*`, `test-unit`, `test-install`,

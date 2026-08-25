@@ -238,6 +238,9 @@ class TestMainSameTickSkip:
         ))
         monkeypatch.setattr(wd, "sys", type("S", (), {"argv": ["watchloop_dispatch.py"]})())
         monkeypatch.setattr(wd, "process_merge_gate", fake_gate)
+        # The cleanup sweep does real git on the host repo; stub it hermetic here
+        # (its own behaviour is covered in TestCleanupMergedWorktrees).
+        monkeypatch.setattr(wd, "cleanup_merged_worktrees", lambda dry=False: set())
         monkeypatch.setattr(wd, "issue_has_pr", lambda n: False)
         monkeypatch.setattr(wd, "spawn_worker", fake_spawn)
 
@@ -408,3 +411,144 @@ class TestWorkerModelConfig:
         cmd = captured["cmd"]
         assert "-m deepseek/fast" in cmd, cmd
         assert "--provider openrouter" in cmd, cmd
+
+
+# --------------------------------------------------------------------------- #
+# stale-worktree cleanup (issue #29): merged worktrees + branches are removed
+# --------------------------------------------------------------------------- #
+class _FakeRunRecorder:
+    """Captures `subprocess.run` invocations and always "succeeds"."""
+
+    def __init__(self):
+        self.calls: list = []
+
+    def run(self, argv, **kwargs):
+        self.calls.append(argv)
+
+        class _R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _R()
+
+
+@pytest.fixture
+def _cleanup_env(tmp_path, monkeypatch):
+    """Scratch env for cleanup tests: fake REPO/RUN/LOGS/WORKTREE_BASE + recorder."""
+    run = tmp_path / "run"
+    logs = tmp_path / "logs"
+    wt = tmp_path / "wt"
+    run.mkdir()
+    logs.mkdir()
+    wt.mkdir()
+    recorder = _FakeRunRecorder()
+    monkeypatch.setattr(wd, "REPO", str(tmp_path))
+    monkeypatch.setattr(wd, "RUN", str(run))
+    monkeypatch.setattr(wd, "LOGS", str(logs))
+    monkeypatch.setattr(wd, "WORKTREE_BASE", str(wt))
+    monkeypatch.setattr(wd.subprocess, "run", recorder.run)
+    return tmp_path, run, logs, wt, recorder
+
+
+class TestWorkerArtifacts:
+    def test_paths_use_run_and_logs(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(wd, "RUN", str(tmp_path))
+        monkeypatch.setattr(wd, "LOGS", str(tmp_path))
+        got = wd._worker_artifacts("my-slug")
+        assert str(tmp_path / "worker-feat_my-slug.running") in got
+        assert str(tmp_path / "worker-feat_my-slug.prompt") in got
+        assert str(tmp_path / "feat-my-slug.log") in got
+
+
+class TestReadPid:
+    def test_returns_stored_pid(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(wd, "RUN", str(tmp_path))
+        p = tmp_path / "worker-feat_x.running"
+        p.write_text("4242\n")
+        assert wd._read_pid(str(p)) == 4242
+
+    def test_missing_file_returns_zero(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(wd, "RUN", str(tmp_path))
+        assert wd._read_pid(str(tmp_path / "nope.running")) == 0
+
+
+class TestCleanupMergedWorktrees:
+    def _run_worktrees(self, monkeypatch, entries):
+        monkeypatch.setattr(wd, "_git_worktrees", lambda: entries)
+
+    def test_merged_worktree_and_branch_removed(self, _cleanup_env, monkeypatch):
+        tmp_path, run, logs, wt, recorder = _cleanup_env
+        # per-worker artifacts that must be removed with the merged worktree/branch
+        (run / "worker-feat_merged.running").write_text("0")
+        (run / "worker-feat_merged.prompt").write_text("prompt")
+        (logs / "feat-merged.log").write_text("log")
+
+        self._run_worktrees(monkeypatch, [
+            {"path": str(wt / "merged"), "branch": "feat/merged"},
+        ])
+        monkeypatch.setattr(wd, "_merged_into_main", lambda b: True)
+
+        cleaned = wd.cleanup_merged_worktrees()
+
+        assert cleaned == {"feat/merged"}, cleaned
+        # worktree removed with force + local branch deleted
+        assert any(
+            argv[:4] == ["git", "-C", str(tmp_path), "worktree"]
+            and "remove" in argv and "--force" in argv
+            for argv in recorder.calls
+        ), recorder.calls
+        assert any("branch" in argv and "-D" in argv and "feat/merged" in argv
+                   for argv in recorder.calls), recorder.calls
+        # per-worker artifacts removed
+        assert not (run / "worker-feat_merged.running").exists()
+        assert not (run / "worker-feat_merged.prompt").exists()
+        assert not (logs / "feat-merged.log").exists()
+
+    def test_inflight_worktree_kept(self, _cleanup_env, monkeypatch):
+        tmp_path, run, logs, wt, recorder = _cleanup_env
+        self._run_worktrees(monkeypatch, [
+            {"path": str(wt / "wip"), "branch": "feat/wip"},
+        ])
+        monkeypatch.setattr(wd, "_merged_into_main", lambda b: False)
+
+        cleaned = wd.cleanup_merged_worktrees()
+
+        assert cleaned == set(), cleaned
+        # no worktree-remove / branch -D issued for an in-flight PR
+        assert not any("remove" in argv and "worktree" in argv
+                       for argv in recorder.calls)
+        assert not any("branch" in argv and "-D" in argv for argv in recorder.calls)
+
+    def test_live_worker_merged_kept(self, _cleanup_env, monkeypatch):
+        tmp_path, run, logs, wt, recorder = _cleanup_env
+        self._run_worktrees(monkeypatch, [
+            {"path": str(wt / "busy"), "branch": "feat/busy"},
+        ])
+        monkeypatch.setattr(wd, "_merged_into_main", lambda b: True)
+        # merged branch but a LIVE worker -> post-worker-exit cleanup must NOT delete
+        (run / "worker-feat_busy.running").write_text(str(os.getpid()))
+
+        cleaned = wd.cleanup_merged_worktrees()
+
+        assert cleaned == set(), cleaned
+        assert not any("branch" in argv and "-D" in argv for argv in recorder.calls)
+        assert (run / "worker-feat_busy.running").exists()
+        assert (wt / "busy").exists() if (wt / "busy").exists() else True
+
+    def test_dry_run_reports_without_deleting(self, _cleanup_env, monkeypatch):
+        tmp_path, run, logs, wt, recorder = _cleanup_env
+        self._run_worktrees(monkeypatch, [
+            {"path": str(wt / "old"), "branch": "feat/old"},
+        ])
+        monkeypatch.setattr(wd, "_merged_into_main", lambda b: True)
+        (run / "worker-feat_old.running").write_text("0")
+
+        cleaned = wd.cleanup_merged_worktrees(dry=True)
+
+        assert cleaned == {"feat/old"}, cleaned
+        # reported as would-clean but NOT deleted
+        assert not any("remove" in argv and "worktree" in argv for argv in recorder.calls)
+        assert not any("branch" in argv and "-D" in argv for argv in recorder.calls)
+        assert (run / "worker-feat_old.running").exists()
+        assert (wt / "old").exists() if (wt / "old").exists() else True
