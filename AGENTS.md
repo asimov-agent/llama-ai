@@ -185,6 +185,43 @@ Logs:
 - Inspect: `tail .watchloop/run/dispatch.log`, `grep -i merg .watchloop/run/dispatch.log`,
   or read any PR's own `.watchloop/logs/<branch>.log`.
 
+### Durable per-interval tick dedup — the hold-for-interval design
+
+The dispatcher runs once per 20-minute cron slot, but the host crontab can fire it
+TWICE inside one slot (the "doubled cron tick", issue #25). To guarantee `main()`
+runs exactly once per slot, the dispatcher takes a **tick lock**
+(`.watchloop/run/dispatch.tick.lock`) guarded by a coarse **interval bucket**
+(`_current_tick()` = `tick-<int(epoch)//1200>`). This design is non-obvious and
+**must not be "simplified"**:
+
+- **The lock is held for the WHOLE 20-min interval — it is NOT released at
+  `main()`'s end.** This is the whole point (issue #27 / PR #28). A phantom
+  re-fire in the same bucket typically lands seconds AFTER the first tick already
+  finished; a lock released synchronously in a `finally` would already be gone, so
+  the re-fire re-acquires and runs — the doubled tick. Holding the lock across the
+  whole bucket makes the dedup *durable*, independent of `main()`'s completion.
+- **A re-fire in the SAME interval is dedup'd.** `_tick_lock_acquire()` first
+  attempts an atomic `O_CREAT|O_EXCL` create, then if the lock exists reads the
+  recorded `(bucket, pid)`. If that bucket equals the current bucket **and** the
+  PID is alive, it logs `[DEDUP] tick skipped: a previous invocation is already
+  running this interval` and `main()` returns WITHOUT a `tick start`. This is
+  exactly the "re-fire in the same interval AFTER the first tick finished" case.
+- **A NEW interval reclaims.** When the wall clock crosses a 20-min boundary the
+  bucket string changes. `_tick_lock_acquire()` sees an OLD-bucket (finished)
+  owner and reclaims it atomically (`[DEDUP] reclaiming finished interval
+  <old> for <new>`), so `main()` runs exactly once for the fresh slot.
+- **A crash mid-tick is NOT a permanent block.** `main()` deliberately does NOT
+  release the lock on an exception — it logs `[DEDUP] tick crashed mid-run; lock
+  stays held until next interval` and re-raises. The lock is reclaimed by the
+  NEXT interval (its bucket differs) or swept as a stale dead-PID lock; it never
+  wedge the loop permanently. (Resuming the worker itself is a separate
+  `.running`-lock concern, documented above.)
+- **Seam to touch if you ever do:** `_current_tick()`, `_tick_lock_acquire()`,
+  `TICK_INTERVAL_SECONDS`, `_read_lock_owner()` in `scripts/watchloop_dispatch.py`,
+  and their hermetic regression tests `tests/test_watchloop_dispatch.py::TestTickDedup`.
+  Tweak-then-test; do not reorder releases without re-covering the "re-fire after
+  finish" case.
+
 Crontab / env / ops:
 - View: `crontab -l`; edit: `crontab -e`. Software + prompts live in `scripts/`.
 - If a worker is interrupted, its fcntl lock releases automatically and the next
