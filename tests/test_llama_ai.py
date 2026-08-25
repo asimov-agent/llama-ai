@@ -250,6 +250,20 @@ def test_sampling_flag_map_covers_all_keys(server_on_path):
         assert flag in cmd, f"missing {flag}"
 
 
+def test_build_command_skips_unknown_sampling_key_no_keyerror(server_on_path):
+    """An unrecognised sampling key must be ignored, never raise KeyError."""
+    meta = {
+        "file": "/models/u.gguf", "name": "u", "arch": "qwen2",
+        "n_layer": 28, "n_embd": 3584, "n_head": 28, "n_head_kv": 4,
+        "ctx_train": 32768, "chat_template": "llama", "size_gb": 24.0,
+        "sampling": {"temperature": "0.7", "nonsense_key": "9.9"},
+    }
+    cmd = llama_ai.build_command(meta, ctx=4096, port=11434)
+    assert "--temp" in cmd and "0.7" in cmd
+    assert "nonsense_key" not in cmd
+    assert "--nonsense-key" not in cmd
+
+
 def test_extract_sampling_from_kv_picks_present_fields():
     kv = {
         "general.architecture": "qwen2",

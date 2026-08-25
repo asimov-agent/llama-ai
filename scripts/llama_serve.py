@@ -359,7 +359,10 @@ def build_command(meta, ctx, port):
     sampling = meta.get("sampling") or {}
     if sampling:
         for key, value in sampling.items():
-            cmd += [SAMPLING_FLAG_MAP[key], value]
+            flag = SAMPLING_FLAG_MAP.get(key)
+            if flag is None:
+                continue  # unknown key: ignore, never raise
+            cmd += [flag, value]
     else:
         cmd += list(SAMPLING)
     # reasoning-capable model: enable reasoning + return thoughts in
