@@ -36,12 +36,12 @@
 
 - [x] 3.1 `make openspec-validate NAME=docs-test-dispatch-live-test-the-durable-per-inter`
       exits 0 ("Change ... is valid").
-- [ ] 3.2 `make lint` passes on a full checkout (worktree container mount has no
+- [x] 3.2 `make lint` passes on a full checkout (worktree container mount has no
       real `.git` so `git ls-files` sees 0 files; CI / full-clone path is the
-      authoritative lint run).
-- [ ] 3.3 `make test-unit` green including the `TestTickDedup` hermetic suite
+      authoritative lint run). "LINT OK — all tracked text files end with a newline."
+- [x] 3.3 `make test-unit` green including the `TestTickDedup` hermetic suite
       (same-interval dedup, next-interval reclaim, stale dead-PID reclaim,
-      main logs `[DEDUP]` not `tick start`).
+      main logs `[DEDUP]` not `tick start`). 51 passed on the committed branch.
 - [ ] 3.4 LIVE dedup verification: over ≥2 cron slots while THIS worker is in
       flight, `.watchloop/run/dispatch.log` shows exactly ONE `tick start`→`tick
       done` per slot (same-bucket re-fire → `[DEDUP]`); no phantom double `tick
