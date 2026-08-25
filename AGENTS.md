@@ -141,40 +141,48 @@ git worktree add -b feat/<kebab-name> ../llama-ai-wt/<kebab-name> main
   whatever you're interactively helping on), with concurrency handled by
   worktrees.
 
-### The host crontab that runs this
+### The host crontab that runs this (DISPATCHER + per-issue parallel workers)
 
-The loop lives in the user's host crontab (every 20 minutes: `*/20 * * * *`) and
-runs to completion with NO time limit — it is intentionally NOT the in-process
-Hermes cron scheduler because that imposes a ~3-min hard interrupt per run. The
-entry `cd`s to this repo (so AGENTS.md is loaded), sets a full `PATH`, and
-launches a one-shot session:
+The loop lives in the user's host crontab, runs every 20 minutes (`*/20 * * * *`),
+and has NO time limit — it is intentionally NOT the in-process Hermes cron
+scheduler (which imposes a ~3-min hard interrupt per run). The crontab runs the
+**dispatcher**, which is a thin Python entrypoint (`scripts/watchloop_dispatch.py`)
+that each tick:
 
-```bash
-*/20 * * * * cd /Users/andy/repository/git/llama-ai && \
-  export PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Users/andy/.local/bin && \
-  HERMES_PROFILE=project-manager /Users/andy/.local/bin/hermes chat \
-    --query-file /Users/andy/repository/git/llama-ai/.watchloop/prompt.txt \
-    -t terminal,file,web --yolo -Q \
-    >> /Users/andy/repository/git/llama-ai/.watchloop/watchloop.log 2>&1
-```
+1. **Finalizes merge-ready PRs** — merges a PR to `main` ONLY if ALL of:
+   CI fully green, an APPROVED review, no open review threads, and the PR head is
+   **NOT behind** `main` (never merge an out-of-sync / behind PR — see issue #9).
+2. **Spawns ONE dedicated parallel worker per orphaned issue** — for every open
+   issue with no live branch/PR, it creates its own isolated git worktree (`git
+   worktree add -b feat/<kebab> ../llama-ai-wt/<kebab> origin/main`) and spawns a
+   dedicated background `project-manager` Hermes session **whose cwd is that
+   worktree** (so AGENTS.md loads) that drives ONLY that issue to a PR
+   (OpenSpec-first → implement → validate → push → PR). Issues run in PARALLEL —
+   they never serialize behind each other, and a worker resumes from its own log
+   on later ticks.
 
-- The prompt lives in `.watchloop/prompt.txt` (gitignored; not source) and is the
-  body of this section: poll PRs/CI, merge approved green PRs, ensure every issue
-  has a branch+PR, work new issues in worktrees. Keep the prompt and this section
-  in sync.
-- Each run is a fresh `project-manager` session (no memory of prior runs); it
-  re-derives state from the repo + GitHub every run. The crontab appends the whole
-  run transcript to `.watchloop/watchloop.log` — inspect via `tail`/`grep
-  'WATCH-LOOP SUMMARY'`.
-- **Per-branch logs (never corrupted, one per PR):** in addition to the run
-  transcript, the watch-loop agent maintains a DEDICATED log per feature branch at
-  `.watchloop/logs/<branch>.log` (e.g. `.watchloop/logs/feat-watchloop-drive-issue.log`).
-  It appends that branch's progress as it works (worktree created, OpenSpec files,
-  tasks ticked, validation results, commit SHAs, push, PR number/URL). Parallel
-  worktrees/issues therefore each have their own clean log and never overwrite or
-  interleave each other's — read a specific PR's history from its own log file.
-- To view or edit: `crontab -l` / `crontab -e`. If you ever re-create an in-process
-  Hermes cron job for this, do NOT — it would reintroduce the 3-min kill.
+Parallel-safety rules (so concurrent workers never collide):
+- Every containerized `make` target (`openspec-*`, `test-unit`, `test-install`,
+  `lint`, `lint-fix`, `test`) is run through the shared fcntl lock helper
+  `scripts/serialized-make.py <lockfile> -- <target>` with the lock at
+  `.watchloop/run/test.lock`, so only ONE worker drives the nerdctl container at a
+  time. Workers NEVER run `make loop-harness`, `make test`, or `make
+  test-install-host` — those are the harness's own orchestrated steps.
+- Each worker uses its OWN worktree + its OWN log (no branch/container/log races).
+
+Logs:
+- Dispatcher run log: `.watchloop/run/dispatch.log`.
+- Per-issue/log worker logs: `.watchloop/logs/feat-<kebab>.log` (one per PR;
+  never corrupted, never interleaved with other workers').
+- Inspect: `tail .watchloop/run/dispatch.log`, `grep -i merg .watchloop/run/dispatch.log`,
+  or read any PR's own `.watchloop/logs/<branch>.log`.
+
+Crontab / env / ops:
+- View: `crontab -l`; edit: `crontab -e`. Software + prompts live in `scripts/`.
+- If a worker is interrupted, its fcntl lock releases automatically and the next
+  dispatcher tick resumes it from its own log.
+- Do NOT recreate an in-process Hermes cron job for this — it would reintroduce the
+  3-min kill.
 
 ## Git workflow — feature branch + PR (MANDATORY)
 
