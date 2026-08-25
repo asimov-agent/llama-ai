@@ -146,7 +146,7 @@ test-clean: ## Remove left-over/stopped orphaned containers of the test image (i
 	echo "Pruned stopped orphaned $(TEST_IMG) containers."
 
 test-unit: ## Hermetic unit tests (containerized) — includes the lint regression test
-	$(TEST_RUN) python -m pytest tests/test_llama_ai.py tests/test_lint_linefeeds.py -p no:cacheprovider -q
+	$(TEST_RUN) python -m pytest tests/test_llama_ai.py tests/test_lint_linefeeds.py tests/test_watchloop_dispatch.py -p no:cacheprovider -q
 
 test-install: ## Host install tests (containerized) — skips cleanly without artifacts
 	$(TEST_RUN) python -m pytest tests/test_install.py -p no:cacheprovider -q

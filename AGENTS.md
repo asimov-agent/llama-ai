@@ -191,6 +191,32 @@ Every piece of work (bug fix, feature, tooling, docs) MUST be developed on a
 merged into `main` through a **pull request**. This matches the remote's branch
 protection (direct pushes to `main` are not allowed for new work).
 
+**ALWAYS REBASE when the branch goes stale — never sit "behind main".**
+On session start, and any time you resume/continue work on a feature branch,
+you MUST bring it up to date with the remote tip yourself (do not wait for a
+human or leave it behind):
+
+```bash
+git fetch origin main
+git merge-base --is-ancestor origin/main HEAD 2>/dev/null \
+  || git rebase origin/main        # if not already at/after main, rebase onto it
+# if rebase fails on conflicts: resolve them yourself (edit the conflicted files,
+# git add, git rebase --continue) — resolving conflicts on the branch is YOUR job,
+# not something to hand back.
+```
+
+- **Why:** `main` moves whenever another PR merges. A branch that falls behind
+  `main` will be rejected at the merge gate (issue #9: never merge a PR that is
+  behind main) and blocks itself on later work. Rebase (replay your commits on
+  the new tip) rather than `merge` when you can, so history stays linear and the
+  diff stays minimal; resolving merge conflicts from a rebase on your OWN branch
+  is your responsibility.
+- **Force-push is allowed ONLY on your own unpublished/PR feature branch** after
+  a rebase you just performed — never force-push a shared branch or `main`, and
+  never force-push to rewrite another commit's history. After rebasing a
+  branch that already has an open PR, `git push --force-with-lease` is the
+  correct way to update it.
+
 1. **Before starting, branch off the latest `main`:**
    ```bash
    git checkout main && git pull origin main
