@@ -64,9 +64,48 @@ MODELS_ROOT = os.environ.get("LLAMA_MODELS_ROOT") or os.path.join(HOME, "models"
 TOTAL_RAM_BYTES = 48 * 1024 * 1024 * 1024  # M5 Pro unified 48 GB
 OS_OVERHEAD = 3 * 1024 * 1024 * 1024       # keep headroom for macOS/Metal
 KV_QUANT = "q4_0"                           # K and V cache quant type
-# sampling defaults from user's usual invocation
+# sampling defaults from user's usual invocation (fallback preset when a model
+# supplies no author-recommended defaults). Kept as the fallback default.
 SAMPLING = ["--temp", "0.6", "--top-p", "0.9", "--top-k", "40", "--min-p", "0.05",
             "--repeat-penalty", "1.05"]
+# Map short sampling dict keys to llama-server flags (see build_command).
+SAMPLING_FLAG_MAP = {
+    "temperature": "--temp",
+    "top_p": "--top-p",
+    "top_k": "--top-k",
+    "min_p": "--min-p",
+    "repeat_penalty": "--repeat-penalty",
+}
+# Short name -> GGUF metadata key for author-recommended sampling defaults.
+SAMPLING_KEYS = {
+    "temperature": "general.sampling.temperature",
+    "top_p": "general.sampling.top_p",
+    "top_k": "general.sampling.top_k",
+    "min_p": "general.sampling.min_p",
+    "repeat_penalty": "general.sampling.repeat_penalty",
+}
+
+
+def _extract_sampling_from_kv(kv):
+    """Author-recommended sampling defaults from a parsed header kv dict."""
+    out = {}
+    for short, full in SAMPLING_KEYS.items():
+        if full in kv:
+            s = str(kv[full]).strip()
+            if s != "":
+                out[short] = s
+    return out
+
+
+def _extract_sampling_from_fields(fields):
+    """Author-recommended sampling defaults from a GGUFReader fields mapping."""
+    out = {}
+    for short, full in SAMPLING_KEYS.items():
+        if full in fields:
+            s = str(_gget(fields[full])).strip()
+            if s != "":
+                out[short] = s
+    return out
 
 from gguf import GGUFReader
 import numpy as np
@@ -155,6 +194,7 @@ def read_model_meta_fast(path):
         "n_head_kv": n_head_kv,
         "ctx_train": int(kv.get(f"{arch}.context_length", 0) or 0),
         "chat_template": str(kv.get("tokenizer.chat_template", "") or ""),
+        "sampling": _extract_sampling_from_kv(kv),
         "size_gb": os.path.getsize(path) / (1024 ** 3),
     }
 
@@ -186,6 +226,7 @@ def read_model_meta(path):
         "n_head_kv": n_head_kv,
         "ctx_train": int(_gget(f.get(f"{arch}.context_length", "0")) or 0),
         "chat_template": str(_gget(f.get("tokenizer.chat_template", "0")) or ""),
+        "sampling": _extract_sampling_from_fields(f),
         "size_gb": os.path.getsize(path) / (1024 ** 3),
     }
 
@@ -309,8 +350,18 @@ def build_command(meta, ctx, port):
            "-ctk", KV_QUANT, "-ctv", KV_QUANT,
            "-b", "2048", "-ub", "512",
            "--cont-batching",
-           "--metrics",
-           *SAMPLING]
+           "--metrics"]
+    # Sampling flags: use the model's author-recommended defaults
+    # (general.sampling.*) when present, else fall back to the global preset.
+    # Each flag and value is a SEPARATE argv element (llama.cpp treats one
+    # "--temp 0.7" string as a single invalid argument). Emit EITHER model
+    # defaults OR the preset, never both, never a flag twice.
+    sampling = meta.get("sampling") or {}
+    if sampling:
+        for key, value in sampling.items():
+            cmd += [SAMPLING_FLAG_MAP[key], value]
+    else:
+        cmd += list(SAMPLING)
     # reasoning-capable model: enable reasoning + return thoughts in
     # `message.reasoning_content` (deepseek format) so thinking is preserved.
     if is_reasoning_model(meta):
