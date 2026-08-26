@@ -316,6 +316,202 @@ class TestEnsureWorktreeSync:
 
 
 # --------------------------------------------------------------------------- #
+# ensure_worktree reuse of an existing branch/worktree (issue #46): the
+# repair spawn must never `git worktree add -b` a branch that already exists
+# (rc-255 regression from the stuck-PR repair stage, issue #42).
+# --------------------------------------------------------------------------- #
+class _WorktreeRun:
+    """Records `subprocess.run` argv; simulates git per the test's wishes.
+
+    *branch_exists* controls `git show-ref --verify` results:
+      "local"  -> refs/heads/<branch> exists
+      "origin" -> only refs/remotes/origin/<branch> exists
+      False    -> neither exists
+    """
+
+    def __init__(self, branch_exists: bool | str):
+        self.calls: list = []
+        self.branch_exists = branch_exists
+
+    def run(self, argv, capture_output=False, text=False, **k):
+        self.calls.append(argv)
+
+        class _R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        if "show-ref" in argv:
+            ref = argv[-1]
+            if self.branch_exists is True or self.branch_exists is False:
+                rc = 0 if (self.branch_exists and ref.startswith("refs/heads/")) else 1
+            elif self.branch_exists == "local":
+                rc = 0 if ref.startswith("refs/heads/") else 1
+            elif self.branch_exists == "origin":
+                rc = 0 if ref.startswith("refs/remotes/") else 1
+            else:
+                raise AssertionError(f"unexpected branch_exists {self.branch_exists!r}")
+            r = _R()
+            r.returncode = rc
+            return r
+        return _R()
+
+    def worktree_adds(self) -> list:
+        return [c for c in self.calls if "worktree" in c and "add" in c]
+
+
+class _FakePopenSub:
+    """Records `.Popen` invocations (worker launch) while keeping the real
+    module otherwise; pairs with a patched subprocess.run for git calls."""
+
+    def __init__(self, calls: list):
+        self._calls = calls
+
+    def Popen(self, argv, **kw):
+        self._calls.append(argv)
+        return _FakeProc()
+
+
+class TestEnsureWorktreeReuse:
+    def _env(self, tmp_path, monkeypatch, slug: str):
+        """Point REPO at tmp_path and force the computed worktree dir to be
+        ABSENT (fresh path) so the add/attach branch is exercised."""
+        monkeypatch.setattr(wd, "REPO", str(tmp_path))
+        real_isdir = os.path.isdir
+        monkeypatch.setattr(
+            os.path, "isdir",
+            lambda p: real_isdir(p) if real_isdir(p) and "llama-ai-wt" not in p else False,
+        )
+        return tmp_path
+
+    def test_existing_worktree_issues_no_add(self, tmp_path, monkeypatch):
+        """(1) worktree already exists -> NO `git worktree add`; rebase-if-behind."""
+        monkeypatch.setattr(wd, "REPO", str(tmp_path))
+        wt = (tmp_path / ".." / "llama-ai-wt" / "issue46-existing").resolve()
+        wt.mkdir(parents=True, exist_ok=True)
+        real_isdir = os.path.isdir
+        monkeypatch.setattr(os.path, "isdir",
+                            lambda p: real_isdir(p) or str(p) == str(wt))
+        rec = _WorktreeRun(False)
+        monkeypatch.setattr(wd.subprocess, "run", rec.run)
+
+        wd.ensure_worktree("feat/issue46-existing", "issue46-existing")
+
+        assert rec.worktree_adds() == [], (
+            f"existing worktree must not issue `git worktree add`: {rec.worktree_adds()}"
+        )
+        # behind (merge-base rc 0 == up-to-date in this fake) -> no crash either way
+
+    def test_origin_branch_no_worktree_attaches_without_b(self, tmp_path, monkeypatch):
+        """(2) branch on origin, no worktree -> `worktree add <path> <branch>`
+        WITHOUT -b (the issue #46 rc-255 fix)."""
+        self._env(tmp_path, monkeypatch, "issue46-attach")
+        rec = _WorktreeRun("origin")
+        monkeypatch.setattr(wd.subprocess, "run", rec.run)
+
+        wd.ensure_worktree("feat/issue46-attach", "issue46-attach")
+
+        adds = rec.worktree_adds()
+        assert len(adds) == 1, f"exactly one worktree add expected: {adds}"
+        cmd = adds[0]
+        assert "-b" not in cmd, f"attach must NOT pass -b (rc 255 regression): {cmd}"
+        assert cmd[cmd.index("add") + 1] == f"{tmp_path}/../llama-ai-wt/issue46-attach"
+        assert "feat/issue46-attach" in cmd
+
+    def test_local_branch_no_worktree_attaches_without_b(self, tmp_path, monkeypatch):
+        """(2b) branch exists LOCALLY, no worktree -> also attach without -b."""
+        self._env(tmp_path, monkeypatch, "issue46-attach-local")
+        rec = _WorktreeRun("local")
+        monkeypatch.setattr(wd.subprocess, "run", rec.run)
+
+        wd.ensure_worktree("feat/issue46-attach-local", "issue46-attach-local")
+
+        adds = rec.worktree_adds()
+        assert len(adds) == 1
+        assert "-b" not in adds[0], f"local existing branch must attach without -b: {adds[0]}"
+
+    def test_neither_branch_nor_worktree_fresh_add_b(self, tmp_path, monkeypatch):
+        """(3) neither exists -> fresh `git worktree add -b <branch> <path>
+        origin/main` (orphan-issue spawn, unchanged)."""
+        self._env(tmp_path, monkeypatch, "issue46-fresh")
+        rec = _WorktreeRun(False)
+        monkeypatch.setattr(wd.subprocess, "run", rec.run)
+
+        wd.ensure_worktree("feat/issue46-fresh", "issue46-fresh")
+
+        adds = rec.worktree_adds()
+        assert len(adds) == 1
+        cmd = adds[0]
+        assert "-b" in cmd, f"fresh spawn must create the branch: {cmd}"
+        assert "origin/main" in cmd, f"fresh spawn must start from origin/main: {cmd}"
+
+    def test_never_add_b_when_branch_exists(self, tmp_path, monkeypatch):
+        """(5) regression: whenever the branch exists, `add -b` is NEVER
+        attempted (the production rc-255 failure, issue #42 log line)."""
+        for state, slug in (("origin", "issue46-reg-o"), ("local", "issue46-reg-l")):
+            rec = _WorktreeRun(state)
+            monkeypatch.setattr(wd.subprocess, "run", rec.run)
+            self._env(tmp_path, monkeypatch, slug)
+            wd.ensure_worktree(f"feat/{slug}", slug)
+            for cmd in rec.worktree_adds():
+                assert "-b" not in cmd, (
+                    f"branch exists ({state}) but `add -b` was attempted: {cmd}"
+                )
+
+
+class TestRepairSpawnReusesBranch:
+    """(4) end-to-end: a repair for a PR whose branch exists on the remote
+    launches the worker in the reused/attached worktree and the git add uses
+    NO -b because the branch exists."""
+
+    def _patch(self, tmp_path, monkeypatch, spawned):
+        monkeypatch.setattr(wd, "RUN", str(tmp_path))
+        monkeypatch.setattr(wd, "LOGS", str(tmp_path / "logs"))
+        monkeypatch.setattr(wd, "REPO", str(tmp_path))
+        (tmp_path / "logs").mkdir()
+        # fresh (absent) worktree path so the add/attach path is exercised
+        real_isdir = os.path.isdir
+        monkeypatch.setattr(
+            os.path, "isdir",
+            lambda p: real_isdir(p) if real_isdir(p) and "llama-ai-wt" not in p else False,
+        )
+        monkeypatch.setattr(wd, "pr_is_behind", lambda pr: False)
+        monkeypatch.setattr(wd, "WORKER_PROVIDER", "openrouter")
+        monkeypatch.setattr(wd, "effective_provider_is_local", lambda: False)
+        return monkeypatch
+
+    def test_repair_spawn_attaches_existing_remote_branch(self, tmp_path, monkeypatch, capsys):
+        spawned = []
+        mp = self._patch(tmp_path, monkeypatch, spawned)
+        mp.setattr(wd, "pr_repairable", lambda pr, n: "CI is red")
+        rec = _WorktreeRun("origin")   # the PR's branch exists on origin
+        monkeypatch.setattr(wd.subprocess, "run", rec.run)
+        monkeypatch.setattr(wd.subprocess, "Popen", _FakePopenSub(spawned).Popen)
+
+        pr = _pr(43, body="Closes #42", head_ref="feat/stuck-pr-repair-stage")
+        wd.process_stuck_prs([pr])
+
+        # The repair worker actually started (Popen recorded, lock written).
+        assert len(spawned) == 1, f"repair worker must spawn, got {spawned}"
+        assert (tmp_path / "worker-feat_stuck-pr-repair-stage.running").exists()
+        # The launch command targets the PR's existing worktree path.
+        cmd = spawned[0][2]
+        assert "llama-ai-wt/stuck-pr-repair-stage" in cmd, cmd
+        # ...and it reads the PR commentary (REPAIR prompt).
+        prompt_file = tmp_path / "worker-feat_stuck-pr-repair-stage.prompt"
+        assert prompt_file.exists()
+        assert "DEDICATED REPAIR worker" in prompt_file.read_text()
+        # git worktree add issued WITHOUT -b (branch exists on origin).
+        adds = rec.worktree_adds()
+        assert len(adds) == 1
+        assert "-b" not in adds[0], (
+            f"repair attach must NOT use -b for an existing branch: {adds[0]}"
+        )
+        out = capsys.readouterr().out
+        assert "repair-PR#43: spawning worker" in out, out
+
+
+# --------------------------------------------------------------------------- #
 # per-tick dedup lock (issue #25): main() runs exactly once per cron tick
 # --------------------------------------------------------------------------- #
 class TestTickDedup:
