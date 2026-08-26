@@ -9,11 +9,13 @@ Mechanism (reuse, never reimplement): it imports Hermes's CANONICAL scanner,
 the function ``agent/prompt_builder.py`` uses to decide whether a context file
 (AGENTS.md, CLAUDE.md, .cursorrules, ...) is blocked.
 
-``hermes-agent`` is a real PyPI dependency of this project
-(tools/requirements-dev.in -> requirements-dev.txt, pinned ==0.19.0, Python
->=3.11), so ``from tools.threat_patterns import scan_for_threats`` resolves from
-the installed site-packages in the test container, CI, and the dev host. We do
-NOT vendor or copy the module — it is maintained as a 3rd-party dependency.
+``hermes-agent`` is a real 3rd-party PyPI dependency of this project (pinned
+``==0.19.0``, Python >=3.11; installed by the standalone ``agents-read`` CI
+job — see .github/workflows/ci.yml — and available on the dev host via the
+Hermes install, e.g. the ``~/.hermes`` venv). So
+``from tools.threat_patterns import scan_for_threats`` resolves from the
+installed dependency in CI and on the dev host. We do NOT vendor or copy the
+module — it is maintained as a 3rd-party dependency.
 
 Treats AGENTS.md strictly as DATA: it is regex-scanned, never executed.
 """
@@ -30,8 +32,10 @@ def main() -> int:
         from tools.threat_patterns import scan_for_threats  # noqa: PLC0415
     except ModuleNotFoundError as exc:
         print(
-            "[test-agents-read] ERROR: hermes-agent not installed. Install it via "
-            "tools/requirements-dev.in (`pip install -r tools/requirements-dev.txt`). "
+            "[test-agents-read] ERROR: hermes-agent not installed. Install it with "
+            "`pip install hermes-agent==0.19.0` into a Python >=3.11 interpreter "
+            "(the CI agents-read job does this automatically; on a dev host the "
+            "Hermes install provides it). "
             f"({exc})",
             flush=True,
         )

@@ -30,4 +30,4 @@ Checklist of record. Each task ticked the moment verified.
 - [x] 2.2 `python -m pytest tests/test_agents_read.py --noconftest` in python:3.12 container -> 17 passed.
 - [x] 2.3 `make lint` passes; `make openspec-validate NAME=test-agents-read` passes.
 - [x] 2.4 Test image still builds (3.10) — no certifi conflict, since hermes not in shared lockfile.
-- [ ] 2.5 Rebase branch onto latest origin/main, force-push, confirm agents-read + existing CI pass.
+- [x] 2.5 Rebase branch onto latest origin/main, force-push, confirm agents-read + existing CI pass.

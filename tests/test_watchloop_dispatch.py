@@ -713,3 +713,191 @@ class TestCleanupMergedWorktrees:
         assert not any("branch" in argv and "-D" in argv for argv in recorder.calls)
         assert (run / "worker-feat_old.running").exists()
         assert (wt / "old").exists() if (wt / "old").exists() else True
+
+
+# --------------------------------------------------------------------------- #
+# stuck-PR repair stage (issue #42): respawn worker to fix red-CI / threads
+# --------------------------------------------------------------------------- #
+def _pr(n, body="Closes #42", head_ref="feat/x", behind=False, green=True, threads=False):
+    """Build a realistic PR dict for repair tests."""
+    return {
+        "number": n,
+        "title": f"PR {n}",
+        "body": body,
+        "head": {"ref": head_ref, "sha": "h" * 40},
+        "base": {"ref": "main", "sha": "b" * 40},
+        "_behind": behind,
+        "_green": green,
+        "_threads": threads,
+    }
+
+
+class TestPrRepairable:
+    def test_open_threads_is_actionable(self, monkeypatch):
+        pr = _pr(1, threads=True)
+        monkeypatch.setattr(wd, "pr_open_threads", lambda n: True)
+        monkeypatch.setattr(wd, "ci_green", lambda pr: True)
+        assert wd.pr_repairable(pr, 1) == "unresolved review threads"
+
+    def test_red_ci_is_actionable(self, monkeypatch):
+        pr = _pr(1, green=False)
+        monkeypatch.setattr(wd, "pr_open_threads", lambda n: False)
+        monkeypatch.setattr(wd, "ci_green", lambda pr: False)
+        assert wd.pr_repairable(pr, 1) == "CI is red"
+
+    def test_clean_pr_not_actionable(self, monkeypatch):
+        pr = _pr(1)
+        monkeypatch.setattr(wd, "pr_open_threads", lambda n: False)
+        monkeypatch.setattr(wd, "ci_green", lambda pr: True)
+        assert wd.pr_repairable(pr, 1) == ""
+
+    def test_incomplete_pr_never_raises(self, monkeypatch):
+        # minimal dict (no head/base) -> ci_green would KeyError, must return ""
+        monkeypatch.setattr(wd, "pr_open_threads", lambda n: False)
+        monkeypatch.setattr(wd, "ci_green",
+                            lambda pr: (_ for _ in ()).throw(KeyError("head")))
+        assert wd.pr_repairable({"number": 1}, 1) == ""
+
+
+class TestPrIssueNumber:
+    def test_extracts_closing_issue(self):
+        assert wd.pr_issue_number({"body": "Closes #42"}) == 42
+
+    def test_no_closing_keyword_returns_none(self):
+        assert wd.pr_issue_number({"body": "mentions #42 in prose"}) is None
+
+    def test_empty_body_returns_none(self):
+        assert wd.pr_issue_number({"body": ""}) is None
+
+
+class TestProcessStuckPrs:
+    def _patch(self, tmp_path, monkeypatch, spawned):
+        monkeypatch.setattr(wd, "RUN", str(tmp_path))
+        monkeypatch.setattr(wd, "LOGS", str(tmp_path / "logs"))
+        monkeypatch.setattr(wd, "REPO", str(tmp_path))
+        monkeypatch.setattr(wd, "WORKTREE_BASE", str(tmp_path / "wt"))
+        (tmp_path / "logs").mkdir()
+        monkeypatch.setattr(wd, "ensure_worktree", lambda *a, **k: f"{tmp_path}/wt")
+        monkeypatch.setattr(wd, "subprocess", _FakeSubprocess(spawned))
+        # default: not behind, hosted (no local probe)
+        monkeypatch.setattr(wd, "pr_is_behind", lambda pr: False)
+        monkeypatch.setattr(wd, "WORKER_PROVIDER", "openrouter")
+        monkeypatch.setattr(wd, "effective_provider_is_local", lambda: False)
+        return monkeypatch
+
+    def test_spawns_repair_for_red_ci(self, tmp_path, monkeypatch):
+        spawned = []
+        mp = self._patch(tmp_path, monkeypatch, spawned)
+        mp.setattr(wd, "pr_repairable", lambda pr, n: "CI is red")
+        pr = _pr(7, body="Closes #42", head_ref="feat/target")
+        wd.process_stuck_prs([pr])
+        assert len(spawned) == 1, f"red-CI PR must spawn a repair worker, got {spawned}"
+        # lock + prompt written for the EXISTING branch
+        assert (tmp_path / "worker-feat_target.running").exists()
+
+    def test_spawns_repair_for_open_threads(self, tmp_path, monkeypatch):
+        spawned = []
+        mp = self._patch(tmp_path, monkeypatch, spawned)
+        mp.setattr(wd, "pr_repairable", lambda pr, n: "unresolved review threads")
+        pr = _pr(8, body="Closes #42", head_ref="feat/threads")
+        wd.process_stuck_prs([pr])
+        assert len(spawned) == 1
+        assert (tmp_path / "worker-feat_threads.running").exists()
+
+    def test_skips_not_actionable(self, tmp_path, monkeypatch):
+        spawned = []
+        mp = self._patch(tmp_path, monkeypatch, spawned)
+        mp.setattr(wd, "pr_repairable", lambda pr, n: "")
+        wd.process_stuck_prs([_pr(1, body="Closes #42", head_ref="feat/ok")])
+        assert len(spawned) == 0, "clean PR must NOT spawn a repair worker"
+
+    def test_skips_behind_pr(self, tmp_path, monkeypatch):
+        # behind -> merge gate owns it; never repair
+        spawned = []
+        mp = self._patch(tmp_path, monkeypatch, spawned)
+        mp.setattr(wd, "pr_is_behind", lambda pr: True)
+        mp.setattr(wd, "pr_repairable", lambda pr, n: "CI is red")
+        wd.process_stuck_prs([_pr(1, body="Closes #42", head_ref="feat/behind")])
+        assert len(spawned) == 0, "behind PR must not spawn a repair worker"
+
+    def test_skips_pr_without_closing_issue(self, tmp_path, monkeypatch):
+        spawned = []
+        mp = self._patch(tmp_path, monkeypatch, spawned)
+        mp.setattr(wd, "pr_repairable", lambda pr, n: "CI is red")
+        # body has no closing keyword -> cannot map to a worker
+        pr = _pr(1, body="no closing keyword here", head_ref="feat/nomap")
+        wd.process_stuck_prs([pr])
+        assert len(spawned) == 0
+
+    def test_incomplete_pr_skips_without_crash(self, tmp_path, monkeypatch):
+        spawned = []
+        self._patch(tmp_path, monkeypatch, spawned)
+        wd.process_stuck_prs([
+            {"number": 1},                      # no head/base
+            "not-a-dict",                        # non-dict
+            {"head": {"ref": "feat/x"}},         # no number
+        ])
+        assert len(spawned) == 0
+        assert (tmp_path / "worker-feat_x.running").exists() is False
+
+    def test_live_lock_skips_repair(self, tmp_path, monkeypatch):
+        # a LIVE .running pid for the PR branch must suppress the repair spawn
+        spawned = []
+        mp = self._patch(tmp_path, monkeypatch, spawned)
+        mp.setattr(wd, "pr_repairable", lambda pr, n: "CI is red")
+        pr = _pr(1, body="Closes #42", head_ref="feat/live")
+        # existing live lock (our own pid)
+        (tmp_path / "worker-feat_live.running").write_text(str(os.getpid()))
+        wd.process_stuck_prs([pr])
+        assert len(spawned) == 0, "live worker must suppress duplicate repair spawn"
+        assert (tmp_path / "worker-feat_live.running").exists()
+
+    def test_local_model_down_skips_repair(self, tmp_path, monkeypatch, capsys):
+        spawned = []
+        mp = self._patch(tmp_path, monkeypatch, spawned)
+        mp.setattr(wd, "pr_repairable", lambda pr, n: "CI is red")
+        mp.setattr(wd, "effective_provider_is_local", lambda: True)
+        mp.setattr(wd, "WORKER_MODEL_EFFECTIVE", "llm-local")
+        mp.setattr(wd, "probe_worker_model", lambda m, **k: False)
+        pr = _pr(1, body="Closes #42", head_ref="feat/down")
+        wd.process_stuck_prs([pr])
+        assert len(spawned) == 0
+        assert not (tmp_path / "worker-feat_down.running").exists()
+        out = capsys.readouterr().out
+        assert "skipping repair" in out
+
+    def test_dry_run_reports_without_spawn(self, tmp_path, monkeypatch, capsys):
+        spawned = []
+        mp = self._patch(tmp_path, monkeypatch, spawned)
+        mp.setattr(wd, "pr_repairable", lambda pr, n: "CI is red")
+        pr = _pr(1, body="Closes #42", head_ref="feat/dry")
+        wd.process_stuck_prs([pr], dry=True)
+        assert len(spawned) == 0, "dry run must NOT spawn"
+        out = capsys.readouterr().out
+        assert "would spawn a repair worker" in out
+
+    def test_main_invokes_stuck_pr_repair(self, tmp_path, monkeypatch, capsys):
+        """main() calls process_stuck_prs with the open PRs (integration)."""
+        # Patch env for main()
+        monkeypatch.setattr(wd, "RUN", str(tmp_path))
+        monkeypatch.setattr(wd, "LOGS", str(tmp_path / "logs"))
+        monkeypatch.setattr(wd, "REPO", str(tmp_path))
+        monkeypatch.setattr(wd, "TICK_LOCK", str(tmp_path / "dispatch.tick.lock"))
+        (tmp_path / "logs").mkdir()
+        monkeypatch.setattr(wd, "sys", type("S", (), {"argv": ["watchloop_dispatch.py"]})())
+        monkeypatch.setattr(wd, "api", lambda path, *a, **k:
+            ([_pr(1, body="Closes #42", head_ref="feat/x")] if "pulls" in path else []))
+        monkeypatch.setattr(wd, "process_merge_gate", lambda prs: set())
+        monkeypatch.setattr(wd, "cleanup_merged_worktrees", lambda dry=False: set())
+        monkeypatch.setattr(wd, "issue_has_pr", lambda n: False)
+        # hermetics: no local probe, hosted, repairable -> spawn
+        monkeypatch.setattr(wd, "effective_provider_is_local", lambda: False)
+        monkeypatch.setattr(wd, "pr_is_behind", lambda pr: False)
+        monkeypatch.setattr(wd, "pr_open_threads", lambda n: False)
+        monkeypatch.setattr(wd, "ci_green", lambda pr: False)  # red CI -> repairable
+        spawned = []
+        monkeypatch.setattr(wd, "ensure_worktree", lambda *a, **k: f"{tmp_path}/wt")
+        monkeypatch.setattr(wd, "subprocess", _FakeSubprocess(spawned))
+
+        wd.main()
+        assert len(spawned) >= 1, "main() must spawn a repair worker for the red-CI PR"

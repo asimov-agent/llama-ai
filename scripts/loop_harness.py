@@ -54,6 +54,10 @@ STAGES = [
     ("test", ["make", "test"]),
     # openspec validate of the active (or given) change
     ("openspec", ["make", "openspec-validate", "NAME=%s" % os.environ.get("NAME", "llama-ai-tooling")]),
+    # issue #46: assert no ACTIVE OpenSpec change has unchecked task checkboxes
+    # (`- [ ]`) — `openspec validate` only checks structure, not completion. This
+    # is the completion half of the gate so a worker can't land unticked tasks.
+    ("openspec-tasks", ["make", "openspec-tasks-check"]),
     # ALWAYS clean up orphaned test containers last (even if earlier stages
     # failed) so no leftover `llama-ai/test` containers accumulate on the host
     # or CI runner.

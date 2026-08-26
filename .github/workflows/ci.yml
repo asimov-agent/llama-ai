@@ -64,8 +64,8 @@ jobs:
   # agents-read: AGENTS.md must not match Hermes context-file threat patterns.
   # Runs on its OWN python:3.12 image (hermes-agent needs Python >=3.11) so it
   # does NOT bump the heavy 3.10 test image and avoids its dep conflicts. The
-  # guard imports the REAL hermes-agent PyPI package (a declared dependency in
-  # tools/requirements-dev.in), never a vendored copy.
+  # guard imports the REAL hermes-agent PyPI package (pinned ==0.19.0, a
+  # 3rd-party dependency), never a vendored copy.
   # ------------------------------------------------------------------
   agents-read:
     runs-on: ubuntu-latest
@@ -93,6 +93,8 @@ jobs:
         run: make openspec-image
       - name: make openspec-validate
         run: make openspec-validate NAME=ci-pipeline
+      - name: Assert all tasks checked (fails on unchecked `- [ ]`)
+        run: make openspec-tasks-check NAME=ci-pipeline
       - name: Prune orphaned test containers
         run: make test-clean
 
