@@ -161,13 +161,19 @@ that each tick:
    they never serialize behind each other, and a worker resumes from its own log
    on later ticks.
 5. **Auto-cleans merged worktrees + branches (issue: auto-clean stale worktrees
-   after a PR merges).** After a PR merges to `main`, the dispatcher automatically
+   after a PR merges; issue #45: and the REMOTE branch).** After a PR merges to
+   `main`, the dispatcher automatically
    removes the now-stale worktree (`git worktree remove --force
-   ../llama-ai-wt/<kebab>`), the merged local `feat/<kebab>` branch, and the
+   ../llama-ai-wt/<kebab>`), the merged local `feat/<kebab>` branch, the
    per-worker `.watchloop/run/worker-feat_<kebab>.running/.prompt` +
-   `.watchloop/logs/feat-<kebab>.log` artifacts — so the loop leaves no dead
-   worktrees/branches behind. In-flight PR worktrees and live running workers are
-   NEVER touched.
+   `.watchloop/logs/feat-<kebab>.log` artifacts, AND the REMOTE branch (`git
+   push origin --delete feat/<kebab>`) — so the loop leaves no dead
+   worktrees/branches (local or on `origin`) behind. GitHub's
+   `delete_branch_on_merge` only applies to UI-button merges, so the merge is
+   also requested with `delete_branch: true` in the API body; the cleanup sweep
+   is the safety net and only deletes remote `feat/*` branches that still exist
+   on `origin` and are already an ancestor of `origin/main` — never `main`.
+   In-flight PR worktrees and live running workers are NEVER touched.
 
 Parallel-safety rules (so concurrent workers never collide):
 - Every containerized `make` target (`openspec-*`, `test-unit`, `test-install`,

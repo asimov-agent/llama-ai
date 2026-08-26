@@ -26,12 +26,17 @@ PARALLEL-SAFETY:
     starts/invokes it and workers are forbidden from running it.
   * each worker uses its OWN git worktree and writes its OWN log.
 
-STALE-WORKTREE CLEANUP (issue #29): after a PR merges to `main`, the merged
-branch's worktree + local branch + worker lock/prompt/log files become stale and
-accumulate. Each tick, after the merge gate, the dispatcher cleans every `feat/*`
-worktree under ../llama-ai-wt/ whose HEAD is an ancestor of origin/main (fully
-merged). In-flight worktrees and worktrees whose worker is still alive are never
-touched; `--dry` reports what would be cleaned without deleting.
+STALE-WORKTREE CLEANUP (issue #29 + issue #45): after a PR merges to `main`, the
+merged branch's worktree + local branch + worker lock/prompt/log files become
+stale and accumulate. Each tick, after the merge gate, the dispatcher cleans
+every `feat/*` worktree under ../llama-ai-wt/ whose HEAD is an ancestor of
+origin/main (fully merged). In-flight worktrees and worktrees whose worker is
+still alive are never touched; `--dry` reports what would be cleaned without
+deleting. issue #45 closes the REMOTE gap: `merge_pr` passes
+`delete_branch: true` in the merge API body, and the cleanup sweep is the
+safety net — for every merged branch it cleans, it also deletes the REMOTE
+branch (`git push origin --delete <branch>`) if `origin` still has it, never
+touching `main`.
 
 PRE-SPAWN MODEL PROBE (issue #37): when the effective worker provider is local
 (empty/localhost/custom/llama.cpp), the dispatcher GETs
@@ -218,7 +223,12 @@ def ci_green(pr) -> bool:
 def merge_pr(pr) -> None:
     n = pr["number"]
     log(f"MERGING PR #{n} ({pr['head']['ref']} -> main)")
-    res = api(f"/pulls/{n}/merge", method="PUT", body={"merge_method": "merge"})
+    # issue #45: request branch deletion at merge time. GitHub's
+    # delete_branch_on_merge repo setting only applies to UI-button merges,
+    # NOT API merges, so the body flag is what kills the remote branch here;
+    # cleanup_merged_worktrees is the safety net for anything that slips through.
+    res = api(f"/pulls/{n}/merge", method="PUT",
+              body={"merge_method": "merge", "delete_branch": True})
     log(f"  merge result: {str(res)[:160]}")
 
 
@@ -438,6 +448,43 @@ def _worker_artifacts(slug: str) -> list[str]:
     return [f"{stem}.running", f"{stem}.prompt", f"{LOGS}/feat-{slug}.log"]
 
 
+def _remote_branch_exists(branch: str) -> bool:
+    """True if `origin` still has the named branch (issue #45)."""
+    r = subprocess.run(
+        ["git", "-C", REPO, "ls-remote", "--heads", "origin", branch],
+        capture_output=True, text=True,
+    )
+    return r.returncode == 0 and bool(r.stdout.strip())
+
+
+def _delete_remote_branch(branch: str, dry: bool = False) -> None:
+    """Delete a merged branch from `origin` (issue #45) — the safety net.
+
+    `merge_pr` already requests `delete_branch: true` at merge time, but the
+    merge API does not always delete (UI merges, older behaviour), so this is
+    the backstop. Only ever deletes branches that still exist on origin and is
+    never called for `main` (its caller guards that). In dry-run it only logs.
+    """
+    if branch == "main":
+        log(f"  [clean] {branch}: merged but it is main — never delete remote")
+        return
+    if not _remote_branch_exists(branch):
+        log(f"  [clean] {branch}: remote branch already gone — skip remote delete")
+        return
+    if dry:
+        log(f"  [dry] would delete remote origin/{branch}")
+        return
+    r = subprocess.run(
+        ["git", "-C", REPO, "push", "origin", "--delete", branch],
+        capture_output=True, text=True,
+    )
+    if r.returncode == 0:
+        log(f"  [clean] {branch}: remote branch deleted from origin")
+    else:
+        log(f"  [clean] {branch}: remote delete failed (next tick retries): "
+            f"{(r.stderr or r.stdout or '').strip()[:160]}")
+
+
 def cleanup_merged_worktrees(dry: bool = False) -> set:
     """Auto-clean worktrees + branches of PRs already merged (issue #29).
 
@@ -447,6 +494,9 @@ def cleanup_merged_worktrees(dry: bool = False) -> set:
     NEVER touches:
       * in-flight worktrees (HEAD NOT merged into origin/main) — open PRs stay, and
       * a merged worktree whose per-worker .running PID is still alive.
+    issue #45: it ALSO deletes the REMOTE branch of every cleaned branch
+    (`git push origin --delete <branch>`) when origin still has it — the safety
+    net for `merge_pr`'s `delete_branch: true` — and never deletes `main`.
     Returns the set of cleaned branches (also reported in dry-run).
     """
     # Freshen remotes so the ancestry check is against latest origin/main.
@@ -475,6 +525,7 @@ def cleanup_merged_worktrees(dry: bool = False) -> set:
             continue
         if dry:
             log(f"  [dry] would clean merged {branch} worktree {path}")
+            _delete_remote_branch(branch, dry=True)  # reports, does not delete
             cleaned.add(branch)
             continue
         log(f"  [clean] merged {branch} -> removing worktree {path}")
@@ -487,6 +538,7 @@ def cleanup_merged_worktrees(dry: bool = False) -> set:
                 os.remove(f)
             except OSError:
                 pass
+        _delete_remote_branch(branch)  # issue #45: remote safety net
         cleaned.add(branch)
     return cleaned
 

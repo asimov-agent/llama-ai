@@ -189,7 +189,10 @@ on the host. A `*/20 * * * *` host crontab entry launches a one-shot
 durable rulebook) that, each tick:
 
 - **Polls PRs + CI first** and merges any PR whose CI is fully green AND has an
-  approval AND no open review threads, then cleans up the merged branch.
+  approval AND no open review threads, then cleans up the merged branch — the
+  local worktree + local branch + per-worker artifacts **and the REMOTE branch**
+  (`git push origin --delete feat/<kebab>`; the merge itself also requests
+  `delete_branch: true`, so no stale `origin` branches accumulate after a merge).
 - **Drives every open issue to a PR**: for any open issue lacking a live branch/
   PR it creates an isolated git worktree feature branch off `main`
   (`../llama-ai-wt/<kebab>`), follows the OpenSpec-first lifecycle

@@ -912,6 +912,157 @@ class TestCleanupMergedWorktrees:
 
 
 # --------------------------------------------------------------------------- #
+# remote-branch deletion after merge (issue #45): the REMOTE gap of issue #29
+# --------------------------------------------------------------------------- #
+class _RemoteAwareRecorder:
+    """`subprocess.run` stand-in: records calls, emulates `ls-remote` output.
+
+    `ls-remote --heads origin <branch>` returns a fake ref line (branch exists)
+    for branches in *present*, empty stdout (already gone) for the rest.
+    Everything else "succeeds" with empty output.
+    """
+
+    def __init__(self, present=()):
+        self.calls: list = []
+        self.present = set(present)
+
+    def run(self, argv, **kwargs):
+        self.calls.append(list(argv))
+
+        class _R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        if argv[3:6] == ["ls-remote", "--heads", "origin"] and argv[6] in self.present:
+            _R.stdout = f"0" * 40 + f"\theads/{argv[6]}\n"
+        return _R()
+
+    @property
+    def remote_deletes(self):
+        return [argv for argv in self.calls
+                if "push" in argv and "origin" in argv and "--delete" in argv]
+
+
+class TestCleanupDeletesRemoteBranch:
+    def _run_worktrees(self, monkeypatch, entries):
+        monkeypatch.setattr(wd, "_git_worktrees", lambda: entries)
+
+    def test_merged_cleaned_branch_remote_deleted(self, _cleanup_env, monkeypatch):
+        """1. merged PR remote branch deleted."""
+        tmp_path, run, logs, wt, recorder = _cleanup_env
+        self._run_worktrees(monkeypatch, [
+            {"path": str(wt / "merged"), "branch": "feat/merged"},
+        ])
+        monkeypatch.setattr(wd, "_merged_into_main", lambda b: True)
+        fake = _RemoteAwareRecorder(present={"feat/merged"})
+        monkeypatch.setattr(wd.subprocess, "run", fake.run)
+
+        cleaned = wd.cleanup_merged_worktrees()
+
+        assert cleaned == {"feat/merged"}, cleaned
+        assert fake.remote_deletes == [
+            ["git", "-C", str(tmp_path), "push", "origin", "--delete", "feat/merged"],
+        ], fake.calls
+
+    def test_inflight_branch_remote_never_deleted(self, _cleanup_env, monkeypatch):
+        """2. in-flight (unmerged) branch: no `push origin --delete`."""
+        tmp_path, run, logs, wt, recorder = _cleanup_env
+        self._run_worktrees(monkeypatch, [
+            {"path": str(wt / "wip"), "branch": "feat/wip"},
+        ])
+        monkeypatch.setattr(wd, "_merged_into_main", lambda b: False)
+        fake = _RemoteAwareRecorder(present={"feat/wip"})
+        monkeypatch.setattr(wd.subprocess, "run", fake.run)
+
+        cleaned = wd.cleanup_merged_worktrees()
+
+        assert cleaned == set(), cleaned
+        assert fake.remote_deletes == [], fake.calls
+
+    def test_dry_run_reports_but_does_not_delete_remote(self, _cleanup_env, monkeypatch):
+        """3. dry-run: remote deletion reported, not executed."""
+        tmp_path, run, logs, wt, recorder = _cleanup_env
+        self._run_worktrees(monkeypatch, [
+            {"path": str(wt / "old"), "branch": "feat/old"},
+        ])
+        monkeypatch.setattr(wd, "_merged_into_main", lambda b: True)
+        fake = _RemoteAwareRecorder(present={"feat/old"})
+        monkeypatch.setattr(wd.subprocess, "run", fake.run)
+
+        cleaned = wd.cleanup_merged_worktrees(dry=True)
+
+        assert cleaned == {"feat/old"}, cleaned
+        assert fake.remote_deletes == [], fake.calls
+
+    def test_merge_pr_requests_branch_deletion(self, monkeypatch):
+        """4. merge_pr PUT body includes delete_branch: true."""
+        calls = []
+
+        def fake_api(path, method="GET", body=None):
+            calls.append((path, method, body))
+            return {"merged": True}
+
+        monkeypatch.setattr(wd, "api", fake_api)
+        pr = {"number": 45, "head": {"ref": "feat/x"}}
+        wd.merge_pr(pr)
+
+        assert ("PUT" in [c[1] for c in calls]), calls
+        put = [c for c in calls if c[1] == "PUT"][0]
+        assert put[0] == "/pulls/45/merge"
+        assert put[2].get("delete_branch") is True, put[2]
+        assert put[2].get("merge_method") == "merge", put[2]
+
+    def test_main_never_deleted(self, _cleanup_env, monkeypatch):
+        """5. even if `main` were passed, no `push origin --delete main`."""
+        tmp_path, run, logs, wt, recorder = _cleanup_env
+        fake = _RemoteAwareRecorder(present={"main"})
+        monkeypatch.setattr(wd.subprocess, "run", fake.run)
+
+        wd._delete_remote_branch("main")
+
+        assert fake.remote_deletes == [], fake.calls
+
+    def test_already_gone_remote_not_redeleted(self, _cleanup_env, monkeypatch):
+        """Remote already deleted (e.g. by the merge API) -> no failing push."""
+        tmp_path, run, logs, wt, recorder = _cleanup_env
+        # `feat/gone` NOT in present -> ls-remote returns empty stdout
+        fake = _RemoteAwareRecorder(present=())
+        monkeypatch.setattr(wd.subprocess, "run", fake.run)
+
+        wd._delete_remote_branch("feat/gone")
+
+        assert fake.remote_deletes == [], fake.calls
+
+    def test_remote_delete_failure_does_not_break_sweep(self, _cleanup_env, monkeypatch):
+        """A failing `git push` is logged (retry next tick), not raised."""
+        tmp_path, run, logs, wt, recorder = _cleanup_env
+        self._run_worktrees(monkeypatch, [
+            {"path": str(wt / "merged"), "branch": "feat/merged"},
+        ])
+        monkeypatch.setattr(wd, "_merged_into_main", lambda b: True)
+
+        def flaky_run(argv, **kwargs):
+            if argv[3:6] == ["ls-remote", "--heads", "origin"]:
+                class _Ok:
+                    returncode = 0
+                    stdout = "0" * 40 + "\theads/feat/merged\n"
+                    stderr = ""
+                return _Ok()
+            class _Fail:
+                returncode = 128
+                stdout = ""
+                stderr = "remote rejected"
+            return _Fail()
+
+        monkeypatch.setattr(wd.subprocess, "run", flaky_run)
+
+        # must not raise even though the push itself failed
+        cleaned = wd.cleanup_merged_worktrees()
+        assert cleaned == {"feat/merged"}, cleaned
+
+
+# --------------------------------------------------------------------------- #
 # stuck-PR repair stage (issue #42): respawn worker to fix red-CI / threads
 # --------------------------------------------------------------------------- #
 def _pr(n, body="Closes #42", head_ref="feat/x", behind=False, green=True, threads=False):
