@@ -48,5 +48,7 @@ targets run through the shared lock helper
       `test_extension_less_file_is_in_tracked_scan` cases fail in the worktree
       container (gitdir not mounted — git ls-files empty there); they pass under
       real CI and are unrelated to this change (same note as issue #29's task).
-- [ ] 4.4 Push `feat/feat-dispatch-delete-stale-remote-branches-after-a` to
-      origin + open PR against `main` referencing issue #45 (not behind main).
+- [x] 4.4 Push `feat/feat-dispatch-delete-stale-remote-branches-after-a` to
+      origin + open PR against `main` referencing issue #45 (PR #48 opened,
+      ahead_by 1 / behind_by 0 — not behind main per issue #9). Merge awaits the
+      loop merge gate (green + approved).
