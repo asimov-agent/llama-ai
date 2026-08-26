@@ -333,10 +333,28 @@ def issue_has_pr(issue_num: int) -> bool:
     return any(issue_num in closing_issues(pr.get("body") or "") for pr in prs)
 
 
+def _branch_exists(branch: str) -> bool:
+    """True if *branch* exists locally (refs/heads) or on origin (refs/remotes).
+
+    Uses `git show-ref --verify --quiet` which exits 0 only when the exact
+    ref exists — no network, no fuzzy matching.
+    """
+    for ref in (f"refs/heads/{branch}", f"refs/remotes/origin/{branch}"):
+        r = subprocess.run(
+            ["git", "-C", REPO, "show-ref", "--verify", "--quiet", ref],
+            capture_output=True,
+        )
+        if r.returncode == 0:
+            return True
+    return False
+
+
 def ensure_worktree(branch: str, slug: str) -> str:
     wd = f"{REPO}/../llama-ai-wt/{slug}"
     # Always refresh the remote tip first so BOTH new and existing worktrees
-    # branch/resume from the newest origin/main, not a stale one.
+    # branch/resume from the newest origin/main, not a stale one.  The fetch
+    # also makes `origin/<branch>` visible so _branch_exists can see remote-only
+    # branches (repair path, issue #46).
     subprocess.run(["git", "-C", REPO, "fetch", "--all", "--prune"], capture_output=True)
     subprocess.run(["git", "-C", REPO, "fetch", "origin", "main"], capture_output=True)
 
@@ -352,12 +370,23 @@ def ensure_worktree(branch: str, slug: str) -> str:
         log(f"  rebased {branch} onto latest origin/main (was behind)")
 
     if not os.path.isdir(wd):
-        r = subprocess.run(
-            ["git", "-C", REPO, "worktree", "add", "-b", branch, wd, "origin/main"],
-            capture_output=True,
-            text=True,
-        )
-        log(f"  worktree {wd} add rc={r.returncode}: {r.stderr.strip()[:120]}")
+        if _branch_exists(branch):
+            # Branch already exists (repair / resume): attach to it WITHOUT -b
+            # so git never reports "a branch named ... already exists" (rc 255).
+            r = subprocess.run(
+                ["git", "-C", REPO, "worktree", "add", wd, branch],
+                capture_output=True,
+                text=True,
+            )
+            log(f"  worktree {wd} attach rc={r.returncode}: {r.stderr.strip()[:120]}")
+        else:
+            # Fresh orphan-issue spawn: create the branch from origin/main.
+            r = subprocess.run(
+                ["git", "-C", REPO, "worktree", "add", "-b", branch, wd, "origin/main"],
+                capture_output=True,
+                text=True,
+            )
+            log(f"  worktree {wd} add rc={r.returncode}: {r.stderr.strip()[:120]}")
     else:
         # Existing worktree: bump the branch to the current remote tip before
         # the worker resumes — never let an approved/PR branch sit behind main.
