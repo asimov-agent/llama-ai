@@ -58,11 +58,17 @@ llama-ai --download-top-tier --count 5      # download the top 5 that fit
   `tasks.md` items ticked.
 - `make lint` (linefeed) GREEN — every tracked file ends with a trailing newline.
 - `make test-unit` GREEN — hermetic unit tests (stubbed HF client + `hf` CLI) assert
-  the fit-gate excludes OOM candidates, low/toy quants are excluded, the tier folder
-  is chosen correctly, and the downloader is invoked with the right
-  `repo_id/filename/dest/label`.
-- Host/Metal proof: a downloaded top-tier model that "fits" must actually run via the
-  GPU health path (`~/bin/llama-server` Metal binary).
+  the fit-gate excludes OOM candidates, low/toy quants are excluded, and the fit is
+  **dynamic** (reads real RAM at runtime, e.g. `sysctl hw.memsize`).
+- Download-placement acceptance (A7): hermetic tests assert the exact filesystem result —
+  file at the provider-aware tier path, complete size (== HF `size`, no `.part`/
+  `.incomplete`), `.progress.log` present, `--list` sees it, idempotent re-run, tier
+  correctness (no cross-tier contamination).
+- **Real** host/GPU proof (A6+A8): actually download the top-tier pick via `hf` if absent,
+  load it on Metal with a dynamic RAM read, answer "hi", re-measure post-load RAM to prove
+  headroom. On a GPU-less CI runner, download/load the top-tier quant that fits the runner's
+  CPU/RAM in the container and verify on CPU. Skip-with-reason if the pick would exceed the
+  card — never a silent OOM.
 - README updated in the same change (new flag + download workflow + layout).
 
 ## Sync rule

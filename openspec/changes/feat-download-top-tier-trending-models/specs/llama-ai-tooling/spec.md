@@ -111,6 +111,39 @@ a reply, and post-load `vm_stat` still shows several GB free — the download+lo
 by the post-load memory check and reported (with before/after numbers), not silently
 accepted.
 
+### Requirement: A8 — Real top-tier download + verification (host GPU vs CI CPU)
+WHEN the verification for `--download-top-tier` runs, THEN it must be a **real end-to-end
+test**, never a stub:
+
+- **Actually download** the chosen top-tier model through the real `hf` CLI /
+  `scripts/hf_download.py` if it is not already present (idempotent — skip when the exact
+  `.gguf` already exists at the target path). No mocked-download verification for the
+  end-to-end gate.
+- **Dynamic target selection**: which top-tier model is "the one that fits" is computed at
+  run time from the actual card, and **differs by environment, honoring AGENTS.md**:
+  - **Host with GPU enabled**: use the Metal/GPU path (`~/bin/llama-server`, the `-ngl 99`
+    Metal binary) and the top-tier model that fits the host GPU with KV headroom (e.g.
+    `unsloth/Qwen3.8-27B-GGUF` → `Qwen3.8-27B-Q8_0.gguf` on a 48 GB card).
+  - **CI (no GPU / CPU-only runner)**: download and load the top-tier model that fits the
+    **CI runner's CPU/RAM** (dynamic total read from `hw.memsize` on the runner) and verify
+    it on the **CPU** through the containerized test image, so CI genuinely exercises the
+    download + fit-gate + load path without pretending a GPU exists.
+- After (re)load, run the A6 checks (load → `/health` → "hi" → post-load remaining RAM) on
+  whichever backend the environment has. If the top-tier pick would exceed the available
+  card, the download is skipped and the check is skipped *with a clear reason* (never a
+  silent OOM, never a fabricated model).
+
+#### Scenario: On the host (48 GB, Metal), verification downloads `Qwen3.8-27B-Q8_0`
+(if absent), loads it on the Metal GPU, answers "hi", and re-measures RAM headroom —
+AGENTS.md's host/GPU proof.
+
+#### Scenario: On a GitHub CI runner (CPU, e.g. 16 GB), verification downloads the top-tier
+Qwen model quant that fits ~16 GB, loads it on CPU in the test container, answers "hi", and
+checks RAM headroom — CI exercises the real download + place + serve path on CPU.
+
+#### Scenario: Already-downloaded top-tier model at the correct path → no re-download
+(idempotent), verification immediately loads and tests it.
+
 ### Requirement: A7 — Download-logic placement acceptance (high-quality criteria)
 WHEN automated tests verify the download placement logic, THEN they assert the **exact
 filesystem result** so mis-placement is caught, not just "the CLI returned 0":
