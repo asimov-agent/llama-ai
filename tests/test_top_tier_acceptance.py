@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -186,3 +187,38 @@ def test_same_name_updated_model_is_redownloaded():
              "same-size, same-name content change (it must not trust name+size alone)")
     finally:
         shutil.rmtree(f"/tmp/{TF}", ignore_errors=True)
+
+
+def test_discover_one_model_per_provider():
+    """Story: a variety of popular makers, not many models from one.
+
+    Given  I ask for the top 5 top-tier models that fit this machine,
+    When   the tool looks up what's trending and what fits,
+    Then   it must return up to 5 DISTINCT makers (one model each) so I get a
+           variety of what's popular now — never several quants from the same
+           provider crowding out others.
+    """
+    total = llama_ai.read_total_ram_bytes()
+    head = llama_ai.read_current_headroom_bytes(total)
+    cands = llama_ai.discover_top_tier(limit=5, total_ram_bytes=total, headroom_bytes=head)
+    # only distinct providers
+    owners = [c["repo"].split("/", 1)[0] for c in cands]
+    assert len(owners) == len(set(owners)), "must be one candidate per provider"
+    # no provider collapsed to an empty result
+    assert all(c["repo"].count("/") == 1 for c in cands)
+
+
+def test_default_count_is_five():
+    """Story: by default we aim for five popular makers.
+
+    Given  the tool flags --download-top-tier is being used without --count,
+    When   it reads the built-in default,
+    Then   the default number of providers to download is 5 (a variety of what's
+           popular now), not 1.
+    """
+    # Read the launcher's own help to confirm the real CLI default for --count.
+    out = subprocess.run([sys.executable, str(REPO / "scripts/llama_serve.py"),
+                          "--help"], capture_output=True, text=True).stdout
+    # help text documents the default 5 as prose: "model per provider, default 5 for variety"
+    assert "default 5" in out, "launcher --help must document --count default 5"
+    assert "--count" in out

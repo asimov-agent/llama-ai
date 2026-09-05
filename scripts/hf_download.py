@@ -49,6 +49,7 @@ def tree_bytes(path):
     return total
 
 def write_log(msg):
+    os.makedirs(dest, exist_ok=True)   # ensure the log dir exists (e.g. after interruption)
     with open(log, "a") as lf:
         lf.write(msg + "\n")
 

@@ -22,14 +22,18 @@ trending signal (`sort=trendingScore`, `filter=gguf`), filters to flagship/large
 only models that fit the machine's unified memory with KV-cache headroom are offered, and ranks
 them (highest-fidelity that fits first, then trendingScore).
 
-**How many / how rated:** `--count N` (default 1) downloads the top N that fit; `--min-trending-score N`
+**How many / how rated:** `--count N` (default 5) downloads the top N **distinct providers**'
+best top-tier model (one per owner, for variety of what's popular now); `--min-trending-score N`
 (default 0) sets a rating floor — only repos with HF `trendingScore >= N` are considered, so
 niche/unrated models don't show. `--list` prints the ranked candidates (repo, filename, size,
-trendingScore, tier) without downloading.
+trendingScore, tier) without downloading. Downloads are **batch-resilient**: any single provider's
+failure is retried (up to 3×) without aborting the batch, and already-completed downloads are
+never re-fetched (etag/refresh idempotent).
 
 #### Scenario: On the dynamic total (48 GB host), a 35B Q5_K_M (~24 GB) is offered; a 70B Q8
-(over the total minus headroom minus KV) and a 0.5B toy are not. `--count 3 --list` shows at most
-3 ranked picks; `--min-trending-score 250` drops any pick below a trendingScore of 250.
+(over the total minus headroom minus KV) and a 0.5B toy are not. `--count 5 --list` shows at most
+5 distinct-provider ranked picks; `--min-trending-score 250` drops any pick below a trendingScore
+of 250. A download batch with one failing provider still completes the others, then retries the failed one.
 
 ### Requirement: A2 — Dynamic memory detection + fit + buffer gate
 WHEN judging fit, THEN it reads the machine's real memory at runtime, not a fixed size, leaving

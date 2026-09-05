@@ -727,6 +727,14 @@ def _main_download_top_tier(args):
                   f"{c['repo']}::{c['filename']}  -> {c['dest_path']}")
         print()
         return
+    # --dry: print what would be downloaded, do NOT download or serve.
+    if args.dry:
+        print(f"\n[dry] would download top {len(cands)} top-tier provider(s):\n")
+        for i, c in enumerate(cands, 1):
+            print(f"{i:2d}. [{c['trendingScore']:>4} trend] {c['size_gb']:7.2f} GB  "
+                  f"{c['repo']}::{c['filename']}  -> {c['dest_path']}")
+        print("\n[dry] nothing was downloaded or served (--dry).")
+        return
     # Download the top `limit` candidates (idempotent per provider). Any single
     # failure is retried (up to RETRIES); already-completed downloads are never
     # re-fetched (download_top_tier_candidate etag-checks the Hub), so a retry
@@ -756,9 +764,6 @@ def _main_download_top_tier(args):
         print("[top-tier] nothing could be downloaded; not serving.")
         sys.exit(1)
     print(f"\n[top-tier] completed {len(completed)}/{len(cands)} provider(s).")
-    if args.dry:
-        print(f"\n[dry] downloaded/skipped {len(cands)} candidate(s); not serving (--dry).")
-        return
     # serve the highest-ranked candidate that we now have locally.
     os.environ["LLAMA_RAM_BYTES"] = str(total)   # keep the fit math consistent for serve
     models = scan_models()
