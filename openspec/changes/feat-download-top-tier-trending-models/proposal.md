@@ -14,9 +14,10 @@ Reuses existing building blocks: `hf`-CLI downloader (`scripts/hf_download.py`),
 ## Change
 
 ```
-llama-ai --download-top-tier                # download best fit, then serve
+llama-ai --download-top-tier                # download top-5 distinct providers, then serve best
 llama-ai --download-top-tier --list         # list what fits (no download)
-llama-ai --download-top-tier --count N      # download top N, serve best
+llama-ai --download-top-tier --count N      # download top N providers, serve best
+llama-ai --download-top-tier --min-trending-score N  # rating floor (only well-rated)
 llama-ai --download-top-tier --dry          # preview only
 ```
 
@@ -29,10 +30,17 @@ llama-ai --download-top-tier --dry          # preview only
   (floor 3 GB, cap 45%). Accept iff `size_bytes + headroom + KV_reserve <= read_total_ram()`,
   using launcher's `KV_QUANT`/`kv_bytes_per_token()`/`tuned_context()`.
 
+**How many / how rated**: `--count N` (**default 5**) downloads the top N **distinct providers'**
+best top-tier model (one per owner — variety of what's popular now), ranked highest-fidelity then
+trendingScore; `--min-trending-score N` (default 0) is a rating floor.
+
 **Download**: delegate to `scripts/hf_download.py` (resolve `HF_BIN`, transfer env, token from
-`~/.zshrc`; abort if `hf` absent). In `refresh=1` mode it always etag-checks the Hub — so an
-upstream file updated **even same name + same size** is re-fetched, and a corrupted local copy is
-restored (never masked by a size/name guard).
+`~/.zshrc`; abort if `hf` absent). Uses **hf-xet** for chunked parallel transfer and shows a live
+**0-100%** progress readout (size, MB/s, elapsed) on the terminal + `.progress.log`. In
+`refresh=1` mode it always etag-checks the Hub — so an upstream file updated **even same name +
+same size** is re-fetched, and a corrupted local copy is restored (never masked by a size/name
+guard). The batch is **resilient**: a failing provider is retried up to 3× without aborting the
+batch, and completed downloads are never re-fetched (idempotent).
 
 **Placement / serve**: down to `~/models/<owner>/<family>/<TierGB>/<file>.gguf` (owner = HF repo
 owner; tier 8/16/24/48), `scan_models()` sees it immediately; serve reuses `build_command()`

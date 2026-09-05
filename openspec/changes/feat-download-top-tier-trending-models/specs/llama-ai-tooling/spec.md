@@ -53,11 +53,14 @@ pre-download. A 16 GB machine automatically uses 16 GB — no code edit.
 ### Requirement: A3 — Download through the existing `hf`-CLI downloader (one code path)
 WHEN a candidate is downloaded, THEN it is fetched via `scripts/hf_download.py` exactly like
 `download_test_model.py`: resolve `HF_BIN` via `shutil.which("hf")` (abort with a clear error if
-absent — no fallback), set `HF_HUB_ENABLE_HF_TRANSFER=1`/`HF_HUB_DISABLE_XET=1`, read `HF_TOKEN`
-from `~/.zshrc`, resume/retry (max 20) on connection drop.
+absent — no fallback), use `HF_XET_HIGH_PERFORMANCE=1` (hf-xet chunked parallel; never
+`HF_HUB_DISABLE_XET`, which forced the slow single-stream path), read `HF_TOKEN` from `~/.zshrc`,
+resume/retry (max 20) on connection drop, and show a live **0-100%** progress readout (size,
+MB/s, elapsed) on the terminal and in the `.progress.log`.
 
-#### Scenario: `hf` on PATH → downloads into the tier folder with a `.progress.log` + resume/retry.
-`hf` absent → fails fast with an actionable error (no second downloader).
+#### Scenario: `hf` on PATH → downloads into the tier folder with a live % progress + resume/retry.
+The terminal shows `NN.N% (X.XX/Y.YY GB) | MB/s | attempt | running` every ~5s. `hf` absent → fails
+fast with an actionable error (no second downloader).
 
 ### Requirement: A9 — Refresh detects same-name content updates (etag/content-hash aware)
 WHEN a downloaded model's `--download-top-tier` run happens again, THEN the path runs

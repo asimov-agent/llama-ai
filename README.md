@@ -142,13 +142,22 @@ have** — with KV-cache headroom so they *run*, not just download.
 ```bash
 # list the top-tier trending models that fit the actual card (no download)
 llama-ai --download-top-tier --list
-# download the highest-quality top-tier model that fits, then serve it
+# download top-5 DISTINCT providers' best top-tier model (default), then serve best
 llama-ai --download-top-tier
-# download the top N that fit, then serve the best
+# download top N distinct providers, then serve the best
 llama-ai --download-top-tier --count 3
+# only consider models rated high enough (trendingScore floor)
+llama-ai --download-top-tier --min-trending-score 150
 # see what it would do without downloading/serving
 llama-ai --download-top-tier --dry
 ```
+
+By default it aims for **5 distinct providers — one model each** (a variety of what's popular
+now), ranked highest-fidelity-that-fits then trending. A failing provider is retried (up to 3×)
+without aborting the batch, and already-downloaded models are never re-fetched on a re-run
+(idempotent via HF content-hash). Live download progress shows a **0-100%** readout
+(`NN.N% (X.XX/Y.YY GB) | MB/s | elapsed`) in the terminal; downloads use **hf-xet** parallel
+transfer (fast for large files).
 
 How it decides "trending + top tier + fits":
 

@@ -4,12 +4,13 @@
       tasks.md written; issue #49 body mirrors this goal). All three describe the
       same `--download-top-tier` objective.
 - [x] 2. `scripts/llama_serve.py` argparse: add `--download-top-tier`, `--count`
-      (default 1), and wire `--list`/`--port`/`--dry` to compose with it.
-- [x] 3. Add `discover_top_tier(limit, total_ram_bytes, headroom_bytes)` module function
-      (near `scan_models()`/tuning helpers): ranked candidates
+      (default 5 = top distinct providers), `--min-trending-score`, and wire
+      `--list`/`--port`/`--dry` to compose with it.
+- [x] 3. Add `discover_top_tier(limit, total_ram_bytes, headroom_bytes, min_trending_score)`
+      module function (near `scan_models()`/tuning helpers): ranked candidates
       `{repo, filename, size_gb, size_bytes, tier_folder, dest_path, trendingScore}`
       from a time-bounded HF trending signal, ranked by quality then trend, single-file
-      only (no shards/mmproj).
+      only (no shards/mmproj), **one candidate per provider (owner)** for variety.
 - [x] 4. HF metadata client using the `hf` CLI conventions in `hf_download.py` /
       `download_test_model.py` (resolve `HF_BIN`, transfer env, token from `~/.zshrc`);
       per-file sizes from HF repo tree API. No new downloader implementation.
@@ -49,6 +50,13 @@
       "hi" replied, wired RAM 2.8->37 GB with ~3.9 GB headroom remaining.
 - [x] 9d. Wire verification into the loop harness + Makefile: `test-top-tier` target
       (host, no-mock) added to `loop_harness.py` as a stage and to the Makefile.
+- [x] 9f. Batch download + progress + speed: `--download-top-tier` downloads the top N
+      DISTINCT providers (one model each) with per-provider retry (up to 3×, no batch
+      abort on a single failure); `hf_download.py` uses `HF_XET_HIGH_PERFORMANCE=1`
+      (hf-xet, never disabling it) and prints a live **0-100%** progress (size, MB/s,
+      elapsed) to the terminal + `.progress.log`; completed models are never re-fetched
+      on re-run (idempotent). Covered by `test_discover_one_model_per_provider` +
+      `test_default_count_is_five` + unit dedupe test.
 - [x] 10. README.md: add `--download-top-tier` workflow, the trend/fit/download
       behaviour, and the tier-folder layout entry for downloaded models.
 - [x] 11. Sync PASS: issue body, OpenSpec change (proposal/spec/tasks), and code/files
