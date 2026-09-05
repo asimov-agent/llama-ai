@@ -114,12 +114,16 @@ while attempt <= MAX_RETRY:
             mbps = total / dt / 1e6 if dt > 0 else 0
             if TOTAL_BYTES:
                 pct = min(100.0, total / TOTAL_BYTES * 100)
-                write_log(f"[{time.strftime('%H:%M:%S')}] {pct:5.1f}% "
-                          f"({total/1e9:6.2f}/{TOTAL_BYTES/1e9:.2f} GB) | "
-                          f"{mbps:.1f} MB/s | attempt {attempt} | running {dt/60:.1f} min")
+                line = (f"[{time.strftime('%H:%M:%S')}] {pct:5.1f}% "
+                        f"({total/1e9:6.2f}/{TOTAL_BYTES/1e9:.2f} GB) | "
+                        f"{mbps:.1f} MB/s | attempt {attempt} | running {dt/60:.1f} min")
+                write_log(line)
+                print(line, flush=True)   # live on the terminal too
             else:
-                write_log(f"[{time.strftime('%H:%M:%S')}] {total/1e9:6.2f} GB so far | "
-                          f"{mbps:.1f} MB/s | attempt {attempt} | running {dt/60:.1f} min")
+                line = (f"[{time.strftime('%H:%M:%S')}] {total/1e9:6.2f} GB so far | "
+                        f"{mbps:.1f} MB/s | attempt {attempt} | running {dt/60:.1f} min")
+                write_log(line)
+                print(line, flush=True)   # live on the terminal too
             # stall watch (no growth ~60s)
             if total == last_bytes:
                 pass  # will accumulate stall detection below
