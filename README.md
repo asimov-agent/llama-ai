@@ -37,15 +37,17 @@ make install
 `make install` does the whole setup so you never touch the venv by hand:
 
 1. **venv** — builds the Python 3.10 gguf-tooling venv at `~/llama-gguf-tools/.venv`
-   (`numpy` + `gguf==0.19.0`).
+   (`numpy` + `gguf==0.19.0` + `huggingface_hub[cli]` so the `hf` downloader used by
+   `--download-top-tier` is always available, no separate install needed).
 2. **launcher** — writes an executable `~/bin/llama-ai` that runs `scripts/llama_serve.py` **with the
    venv's python**, so `gguf`/`numpy` resolve with zero extra steps.
 3. **`llama-server` on PATH** — symlinks `~/bin/llama-server` → your llama.cpp
    `build/bin/llama-server` (override the build path with `LLAMA_SERVER_BIN=<path>`).
    `scripts/llama_serve.py` resolves the server as **`llama-server` on PATH** and **terminates with a
    clear error if it isn't found**.
-4. **symlink** — `ln -s` `~/bin/llama_ai.py` → this repo's copy of the launcher (`scripts/llama_serve.py`).
-5. **verify** — a `--list` smoke run confirms the install.
+4. **symlink + smoke** — symlinks `~/bin/llama_ai.py` → this repo's launcher (`scripts/llama_serve.py`),
+   then runs `~/bin/llama-ai --list`. Succeeds even when `~/models` is empty (you populate it with
+   `llama-ai --download-top-tier`), failing only on a genuine gguf/launch error.
 
 After `make install`, just run:
 

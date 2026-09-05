@@ -599,11 +599,14 @@ def download_top_tier_candidate(cand, models_root=None):
     final = cand["dest_path"]
     hf = (os.environ.get("HF_BIN") or "").strip() or shutil.which("hf")
     if not hf or not os.path.isfile(hf):
-        # hf-env fallback used on the host (downloader also reads HF_BIN).
-        hf_env = os.path.expanduser("~/models/hf-env/bin/hf")
-        if os.path.isfile(hf_env):
-            hf = hf_env
-        else:
+        # hf-env fallback used on the host (downloader also reads HF_BIN), then the
+        # launcher's own venv (make install now bundles huggingface_hub[cli]).
+        for _hf_cand in (os.path.expanduser("~/models/hf-env/bin/hf"),
+                         os.path.join(os.path.dirname(sys.executable), "hf")):
+            if os.path.isfile(_hf_cand):
+                hf = _hf_cand
+                break
+        if not hf:
             raise SystemExit("[ERROR] 'hf' CLI not found. Install huggingface_hub "
                              "(or set HF_BIN) — top-tier download aborts (no fallback).")
     os.makedirs(dest_dir, exist_ok=True)

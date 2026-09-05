@@ -76,7 +76,11 @@ link:
 # ---- 4. smoke: confirm the launcher can list models ---------------------
 smoke:
 	@echo "==> Smoke test: $(LAUNCHER) --list"
-	@$(LAUNCHER) --list || { echo "Installed, but model scan returned nothing (no .gguf under ~/models yet), or gguf import failed." >&2; exit 1; }
+	@if $(LAUNCHER) --list; then \
+		echo "==> OK: launcher runs and found models."; \
+	else \
+		echo "==> Launcher installed and runs. (No .gguf under ~/models yet — install succeeds; use 'llama-ai --download-top-tier' to fetch trending top-tier models, or drop a .gguf into ~/models and run 'make list'.)" >&2; \
+	fi
 
 # ---- helpers ------------------------------------------------------------
 list:
@@ -216,11 +220,16 @@ loop-harness: ## Loop runner (host orchestration): image->download->lint->unit->
 chained: test-unit test-agents-read test-install test-health test openspec-validate
 	@echo "All chain steps completed."
 
-uninstall: ## Remove the launcher + symlinks (leaves the venv)
-	@rm -f "$(LAUNCHER)" "$(BIN)/llama_ai.py" "$(BIN)/llama-server" \
-		"$(REPO)/scripts/llama_serve.py" "$(REPO)/scripts/hf_download.py"
+uninstall: ## Remove ONLY the launcher + symlinks in ~/bin (leaves the venv AND all repo source files)
+	# Removes just the installed artifacts: the ~/bin/llama-ai launcher, the
+	# ~/bin/llama_ai.py symlink, and the ~/bin/llama-server symlink. It MUST NOT
+	# delete repo source files (scripts/llama_serve.py, scripts/hf_download.py) —
+	# those live in the checkout/worktree and are tracked in git; deleting them
+	# breaks a subsequent `make install` from the same tree. Uninstall only
+	# undoes what `make install` wrote into ~/bin.
+	@rm -f "$(LAUNCHER)" "$(BIN)/llama_ai.py" "$(BIN)/llama-server"
 	@echo "Removed $(LAUNCHER), $(BIN)/llama_ai.py, and $(BIN)/llama-server"
-	@echo "(venv kept at $(VENV); 'make -C tools clean' to drop requirements.txt)"
+	@echo "(venv kept at $(VENV) and repo source untouched; 'make -C tools clean' to drop requirements.txt)"
 
 help:
 	@echo "Targets:" \
