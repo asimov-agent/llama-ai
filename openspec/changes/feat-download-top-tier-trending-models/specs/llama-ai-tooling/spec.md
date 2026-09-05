@@ -2,218 +2,137 @@
 
 ## Why (rationale)
 
-The launcher (`scripts/llama_serve.py`, symlinked as `~/bin/llama_ai.py`) can only
-serve models already present under `~/models`. Issue #49 wants it to also **download
-the currently-trending, top-tier GGUF models that fit the user's GPU** — the large,
-popular community models (e.g. Qwen3, DeepSeek-R1 distill, Mistral Small/Large, Llama
-3.3, Gemma 3, gpt-oss, Phi, QwQ) sized so that, on a 48 GB unified-memory card, a KV
-cache still fits and the model runs after download. This is explicitly the *opposite*
-of a low-tier picker.
-
-The change reuses the repo's established building blocks: the `hf`
-(huggingface_hub) CLI via `scripts/hf_download.py`, the tiered `~/models`
-folder layout, and the launcher's existing fit/KV math (`kv_bytes_per_token()`,
-`tuned_context()`, `build_command()`), now backed by a **dynamic** total-memory read
-(the card's real size via `sysctl hw.memsize`, plus current-pressure headroom via
-`vm_stat`) instead of hardcoded constants. It adds no second downloader
-implementation (the repo's "no fallback" rule is preserved).
+The launcher (`scripts/llama_serve.py`, symlinked as `~/bin/llama-ai`) can only serve
+locally-present models. Issue #49 adds `--download-top-tier`: fetch the **currently-trending,
+top-tier** GGUF models (HF community quants) that **fit the user's GPU** with KV-cache
+headroom, so they run after download — the opposite of a low-tier picker. Reuses the existing
+`hf`-CLI downloader, tiered `~/models` layout, and launcher fit/KV math (no second downloader —
+AGENTS.md "no fallback" rule holds), with a dynamic card-memory read instead of hardcoded
+constants.
 
 ---
 
 ## ADDED Requirements
 
-### Requirement: A1 — `--download-top-tier` discovers trending + top-tier + GPU-fitting models
-WHEN a user runs `llama-ai --download-top-tier`, THEN the launcher queries a
-time-bounded Hugging Face trending signal (trending score / recent downloads),
-filters to flagship/large popular families, filters to candidate `.gguf` files whose
-quant file is non-trivial (no sub-1B toy quants), and applies the fit+buffer gate so
+### Requirement: A1 — Discovers trending + top-tier + GPU-fitting models
+WHEN a user runs `llama-ai --download-top-tier`, THEN the launcher queries a time-bounded HF
+trending signal (`sort=trendingScore`, `filter=gguf`), filters to flagship/large families
+(Qwen3/DeepSeek/Mistral/Llama/Gemma/gpt-oss/Phi/QwQ/GLM...), excludes non-trivial-toy quants
+(`MIN_TOP_TIER_GB`, no multi-file shards / vision projectors), and applies the fit+buffer gate so
 only models that fit the machine's unified memory with KV-cache headroom are offered.
 
-#### Scenario: On the dynamic total (48 GB host), a 35B Q5_K_M (~24 GB) model is offered
-(because it fits `read_total_ram()` with KV headroom), but a 70B Q8 (would exceed the
-dynamic total minus headroom minus KV) and a 0.5B toy quant are not.
+#### Scenario: On the dynamic total (48 GB host), a 35B Q5_K_M (~24 GB) is offered; a 70B Q8
+(over the total minus headroom minus KV) and a 0.5B toy are not. `--list` prints ranked candidates
+(repo, filename, size, tier) without downloading.
 
-#### Scenario: `llama-ai --download-top-tier --list` prints the ranked candidates that
-would fit (repo_id, filename, size_gb, quant, tier) without downloading.
+### Requirement: A2 — Dynamic memory detection + fit + buffer gate
+WHEN judging fit, THEN it reads the machine's real memory at runtime, not a fixed size, leaving
+KV-cache headroom:
+- **Total**: `sysctl hw.memsize` (macOS) / `MemTotal` from `/proc/meminfo` (Linux) /
+  `LLAMA_RAM_BYTES` override.
+- **Headroom**: current pressure (`vm_stat` wired + safety), floored at 3 GB, capped at 45% of
+  total — stable yet bounded by the real card.
+- **Pre-download**: accept iff `predicted_size_bytes + headroom + KV_reserve <= read_total_ram()`.
+- **Post-download**: re-derive exact context via `read_model_meta_fast()` + `tuned_context()`.
 
-### Requirement: A2 — Dynamic memory detection + fit + buffer gate (from the actual GPU/CPU card)
-WHEN the launcher judges whether a candidate fits, THEN it **reads the machine's real
-memory at runtime** instead of assuming a fixed size, AND it leaves KV-cache headroom,
-using the model's own GGUF metadata in two stages:
+`KV_QUANT`/`kv_bytes_per_token()`/`tuned_context()` stay the single fit implementation.
 
-- **Dynamic total & headroom.** Total unified memory is read from the host (macOS:
-  `sysctl -n hw.memsize`; fallback to an `LLAMA_RAM_BYTES` env override). OS/reserved
-  headroom is derived from **current memory pressure** (macOS `vm_stat`: wired + a safety
-  margin), not a hardcoded `3 GB`, so the decision tracks the state of the actual card.
-- **Pre-download** (no local file): accept only if HF per-file `size` + dynamic KV reserve
-  fit the real total, i.e. `predicted_size_bytes + headroom + KV_reserve <= read_total_ram()`.
-- **Post-download**: re-derive exact context from the real GGUF header via
-  `read_model_meta_fast()` + `tuned_context()` against the same dynamic total.
-
-`KV_QUANT`, `kv_bytes_per_token()`, and `tuned_context()` stay the single fit
-implementation the auto-tuner already uses.
-
-#### Scenario: On the 48 GB M5 Pro, `sysctl hw.memsize` reports 51,539,607,552 B; the
-35B Q5_K_M (~24 GB) is accepted, but a 70B Q8 (would exceed `read_total_ram() − headroom − KV`) is rejected pre-download.
-
-#### Scenario: A machine with a different card (e.g. 16 GB) automatically uses 16 GB as
-the total — no code edit — because the value is read at runtime, not hardcoded.
+#### Scenario: A 48 GB card accepts the 27B Q8 (~29 GB, ~16 GB KV); a 70B Q8 is rejected
+pre-download. A 16 GB machine automatically uses 16 GB — no code edit.
 
 ### Requirement: A3 — Download through the existing `hf`-CLI downloader (one code path)
-WHEN the user selects a candidate to download, THEN it is fetched via
-`scripts/hf_download.py` with the exact mechanics of `download_test_model.py`:
-resolve `HF_BIN` via `shutil.which("hf")` (abort with a clear error if absent — no
-fallback downloader), set `HF_HUB_ENABLE_HF_TRANSFER=1` + `HF_HUB_DISABLE_XET=1`, read
-`HF_TOKEN` from `~/.zshrc`, and resume/retry (max 20) on connection drop.
+WHEN a candidate is downloaded, THEN it is fetched via `scripts/hf_download.py` exactly like
+`download_test_model.py`: resolve `HF_BIN` via `shutil.which("hf")` (abort with a clear error if
+absent — no fallback), set `HF_HUB_ENABLE_HF_TRANSFER=1`/`HF_HUB_DISABLE_XET=1`, read `HF_TOKEN`
+from `~/.zshrc`, resume/retry (max 20) on connection drop.
 
-#### Scenario: `hf` is on PATH; the model downloads into its tier folder with a
-`.progress.log` and the existing resume/retry behaviour.
-
-#### Scenario: `hf` is absent; the command fails fast with an actionable error instead
-of invoking a second downloader.
+#### Scenario: `hf` on PATH → downloads into the tier folder with a `.progress.log` + resume/retry.
+`hf` absent → fails fast with an actionable error (no second downloader).
 
 ### Requirement: A9 — Refresh detects same-name content updates (etag/content-hash aware)
-WHEN a model is already downloaded and `--download-top-tier` runs again, THEN the download
-path uses **REFRESH mode** (`hf_download.py` with `refresh=1`), which always consults the
-Hub and decides freshness by the file's **etag = content hash**, not by filename or size:
-- if the local file's content still matches the Hub -> `hf` no-ops fast, no re-download;
-- if the file was **UPDATED upstream** — same filename, even same size, new bytes — the
-  etag differs and `hf` re-fetches just that file;
-- a corrupt / fragmented local file (same name) is likewise detected and re-fetched.
+WHEN a downloaded model's `--download-top-tier` run happens again, THEN the path runs
+`hf_download.py` with `refresh=1`, which always consults the Hub and decides freshness by the
+file's **etag = content hash**, never by filename or size:
+- unchanged → `hf` no-ops fast;
+- upstream changed the file **even same name + same size** → etag differs, `hf` re-fetches just
+  that file;
+- a corrupted local copy (same name+size) is detected and restored.
 
-The top-tier path must NOT skip on mere existence or size alone, because that would mask a
-same-name content update. Resume of a partial download is unchanged (`hf` resumes by byte
-offset from the recorded etag).
+The top-tier path must NOT skip on existence/size alone (that would mask an update). Partial
+downloads still resume by byte offset from the recorded etag.
 
-#### Scenario: `Qwen3.8-27B-UD-Q8_K_XL.gguf` is present; upstream re-uploads the same filename
-with new weights (same size). A re-run re-fetches the changed file; serving uses the new bytes.
-
-#### Scenario: A locally corrupted file (same name + size) is re-downloaded and restored to
-the correct content on the next `--download-top-tier` run.
+#### Scenario: Upstream re-uploads `Qwen3.8-27B-UD-Q8_K_XL.gguf` (same name+size, new weights) →
+a re-run re-fetches and serves the new bytes. A locally corrupted copy is restored on re-run.
 
 ### Requirement: A4 — Provider-aware tier-folder placement + immediate serveability
-WHEN a model is downloaded via `--download-top-tier`, THEN it lands in
-`~/{MODELS_ROOT}/<owner>/<model-family>/<TierGB>/` where `<owner>` is the HF repo owner
-(who created/quantized the model, e.g. `unsloth`, `OBLITERATUS`), `<model-family>` is the
-family, and `<TierGB>` is the computed fitting tier (8/16/24/48). Because `scan_models()`
-uses `os.walk(MODELS_ROOT)` at any depth, the downloaded model is immediately visible to
-the existing picker and auto-tuner with no scanner change.
+WHEN downloaded, THEN the model lands in `~/{MODELS_ROOT}/<owner>/<model-family>/<TierGB>/<file>.gguf`
+(owner = HF repo owner, family = repo family, tier 8/16/24/48). `scan_models()` (`os.walk` at any
+depth) sees it immediately — no scanner change.
 
-#### Scenario: `unsloth/Qwen3.8-27B-GGUF` Q8_0 is downloaded to
-`~/models/unsloth/Qwen3.8-27B/48GB/Qwen3.8-27B-Q8_0.gguf`; `llama-ai --list` shows it as a
-selectable model, and the owner is obvious from the path.
+#### Scenario: `unsloth/Qwen3.8-27B-GGUF` Q8_0 → `~/models/unsloth/Qwen3.8-27B/48GB/...`; `--list`
+shows it and the owner is obvious from the path.
 
 ### Requirement: A5 — Serve after download (single invocation)
-WHEN `--download-top-tier` downloads a model that also serves (not `--list`-only),
-THEN the launcher builds the server command with the existing `build_command()`
-(tuning, sampling, `--alias llm-local`, reasoning) and runs the normal serve flow,
-honoring `--port` and `--dry`.
+WHEN `--download-top-tier` downloads and serves (not `--list`), THEN it reuses `build_command()`
+(tuning, sampling, `--alias llm-local`, reasoning) and the existing serve flow, honoring `--port`
+and `--dry`.
 
-#### Scenario: `llama-ai --download-top-tier --port 11434` downloads the chosen model
-then serves it on port 11434 with the standard tuned flags.
+#### Scenario: `llama-ai --download-top-tier --port 11434` downloads then serves on 11434.
 
 ### Requirement: A6 — Dynamic GPU load + "hi" verification with remaining-RAM proof
-WHEN `--download-top-tier` (or the verification step) loads a downloaded model on the
-real GPU, THEN the launcher **dynamically measures the machine, loads the model, asks it
-"hi", and confirms there is still headroom after load** — so "fits" is proven, not assumed:
+WHEN verification loads a downloaded model, THEN it **proves** "fits" (does not assume it):
+measure RAM **before** load → load onto the GPU (Metal), wait for `/health` → POST "hi", assert a
+reply → re-measure RAM **after**; fail + report before/after numbers if the post-load headroom is
+below the safety margin (never claim success on a swap/OOM).
 
-1. **Measure before load**: read total RAM from the card (`sysctl hw.memsize`) and current
-   usage; compute available headroom at run time (not a hardcoded value).
-2. **Load the model**: launch onto the GPU (Metal), wait for `/health`.
-3. **Ask "hi"**: POST to `/v1/chat/completions` and assert a real text reply.
-4. **Measure after load**: re-read available memory and assert the loaded model left the
-   documented headroom (i.e. it physically loaded and didn't consume everything / didn't
-   swap). If the post-load free memory is below the safety margin, the check fails and
-   reports the numbers instead of claiming success.
-
-#### Scenario: After launching `Qwen3.8-27B-Q8_0` (~29 GB) the `/health` is ok, "hi" returns
-a reply, and post-load `vm_stat` still shows several GB free — the download+load passes.
-
-#### Scenario: A model that fits on disk but would consume all headroom on load is detected
-by the post-load memory check and reported (with before/after numbers), not silently
-accepted.
+#### Scenario: `Qwen3.8-27B-Q8_0` (~29 GB) loads, `/health` ok, "hi" replies, post-load `vm_stat`
+still shows several GB free → passes. A model that would consume all headroom is caught by the
+post-load check and reported.
 
 ### Requirement: A8 — Real top-tier download + verification (host GPU vs CI CPU)
-WHEN the verification for `--download-top-tier` runs, THEN it must be a **real end-to-end
-test**, never a stub:
+WHEN the verification runs, THEN it is a **real end-to-end test (no mocks/stubs)**:
+- **Actually download** via the real `hf`/downloader if not already present (idempotent).
+- Dynamic target per environment (AGENTS.md): host with GPU → Metal path (`~/bin/llama-server`,
+  `-ngl 99`, the fitting GPU model); GPU-less CI runner → CPU path in the containerized test image,
+  fitting the runner's CPU/RAM.
+- Run A6 checks (load → `/health` → "hi" → post-load RAM) on whichever backend exists. If the pick
+  would exceed the card: skip-with-reason — never a silent OOM.
 
-- **Actually download** the chosen top-tier model through the real `hf` CLI /
-  `scripts/hf_download.py` if it is not already present (idempotent — skip when the exact
-  `.gguf` already exists at the target path). No mocked-download verification for the
-  end-to-end gate.
-- **Dynamic target selection**: which top-tier model is "the one that fits" is computed at
-  run time from the actual card, and **differs by environment, honoring AGENTS.md**:
-  - **Host with GPU enabled**: use the Metal/GPU path (`~/bin/llama-server`, the `-ngl 99`
-    Metal binary) and the top-tier model that fits the host GPU with KV headroom (e.g.
-    `unsloth/Qwen3.8-27B-GGUF` → `Qwen3.8-27B-Q8_0.gguf` on a 48 GB card).
-  - **CI (no GPU / CPU-only runner)**: download and load the top-tier model that fits the
-    **CI runner's CPU/RAM** (dynamic total read from `hw.memsize` on the runner) and verify
-    it on the **CPU** through the containerized test image, so CI genuinely exercises the
-    download + fit-gate + load path without pretending a GPU exists.
-- After (re)load, run the A6 checks (load → `/health` → "hi" → post-load remaining RAM) on
-  whichever backend the environment has. If the top-tier pick would exceed the available
-  card, the download is skipped and the check is skipped *with a clear reason* (never a
-  silent OOM, never a fabricated model).
-
-#### Scenario: On the host (48 GB, Metal), verification downloads `Qwen3.8-27B-Q8_0`
-(if absent), loads it on the Metal GPU, answers "hi", and re-measures RAM headroom —
-AGENTS.md's host/GPU proof.
-
-#### Scenario: On a GitHub CI runner (CPU, e.g. 16 GB), verification downloads the top-tier
-Qwen model quant that fits ~16 GB, loads it on CPU in the test container, answers "hi", and
-checks RAM headroom — CI exercises the real download + place + serve path on CPU.
-
-#### Scenario: Already-downloaded top-tier model at the correct path → no re-download
-(idempotent), verification immediately loads and tests it.
+#### Scenario: Host (48 GB Metal) verifies the 27B Q8 on GPU; CI CPU runner verifies the quant
+that fits ~16 GB on CPU; already-downloaded → no re-download, loads immediately.
 
 ### Requirement: A7 — Download-logic placement acceptance (high-quality criteria)
-WHEN automated tests verify the download placement logic, THEN they assert the **exact
-filesystem result** so mis-placement is caught, not just "the CLI returned 0":
+WHEN automated tests verify download placement, THEN they assert the **exact filesystem result**,
+not just exit 0:
+- `.gguf` at exactly `~/{MODELS_ROOT}/<owner>/<family>/<TierGB>/<file>.gguf` (owner/family/tier from
+  HF metadata);
+- file **complete** (size == HF bytes, no `.incomplete`/`.part`/lock remnants) with a `.progress.log`;
+- `scan_models()`/`--list` sees it; re-run is idempotent; different size-fits land in different tier
+  folders (24 GB → `24GB/`, 48 GB → `48GB/`; no cross-tier contamination).
 
-- The `.gguf` lands at exactly
-  `~/{MODELS_ROOT}/<owner>/<model-family>/<TierGB>/<file>.gguf` (owner + family + tier all
-  from the HF repo metadata).
-- The file is the **complete** download (size equals the HF `size`, no `.incomplete` /
-  `.part` / lock remnants).
-- A `.progress.log` exists next to it (the downloader's contract).
-- `scan_models()` picks it up immediately: `llama-ai --list` lists it, and the owner/family
-  are derivable from the path (provenance preserved).
-- A re-run is idempotent: `--download-top-tier` does not re-download when the file is
-  already present at the correct path.
-- A *different* size fit chooses a *different* tier folder (e.g. 24 GB fit → `24GB/`,
-  48 GB fit → `48GB/`) — no cross-tier contamination.
-
-#### Scenario: A hermetic test stubs `hf` and asserts the exact destination path prior to
-invocation, then a post-invocation file assertion confirms the file + `.progress.log` exist
-at that path with the correct size.
-
-#### Scenario: Two runs against stubs with different sizes land in `24GB/` and `48GB/`
-respectively, and neither leaks into an adjacent tier.
+#### Scenario: Stub `hf`, assert the exact destination path pre-invocation, then assert the file +
+`.progress.log` at that path with the right size. Two size-fits land in `24GB/` and `48GB/` without
+leaking across tiers.
 
 ---
 
-## EXISTING Requirements (unchanged, must keep passing)
+## EXISTING Requirements (unchanged)
 
 ### Requirement: E1 — Local model serving preserved
-WHEN a user runs the existing `llama-ai <name>` / `--list` / `--port` / `--dry`
-invocations, THEN behaviour is unchanged from today (scan, pick, tune, serve).
-
-#### Scenario: `llama-ai --list` still lists all local GGUF models exactly as before.
+WHEN the existing `llama-ai <name>` / `--list` / `--port` / `--dry` invocations run, THEN behaviour
+is unchanged (scan, pick, tune, serve). `--list` still lists all local GGUFs.
 
 ### Requirement: E2 — Stable alias `llm-local`
-WHEN `build_command()` builds a server command, THEN it keeps `--alias llm-local`
-regardless of which model (local or newly downloaded) is loaded.
-
-#### Scenario: A client requests `model: llm-local` against a server launched from a
-`--download-top-tier` run and it resolves.
+WHEN `build_command()` runs, THEN it keeps `--alias llm-local` for any local or newly-downloaded
+model, so OpenAI-compatible clients pin one endpoint name.
 
 ---
 
 ## REM Requirements — one code path preserved
-WHEN the download path runs, THEN it uses only the official `hf` (huggingface_hub)
-CLI via `scripts/hf_download.py` — no `requests`/`urllib` fallback downloader.
-WHEN the launcher resolves its server, THEN it uses only PATH / `LLAMA_SERVER` /
-`~/bin/llama-server`, terminating with a clear error when absent (no dual path).
-WHEN the fit-gate judges a model, THEN it uses the same fit implementation as the
-auto-tuner — `KV_QUANT`/`kv_bytes_per_token()`/`tuned_context()` plus a dynamic total
-read from the card (no separate fit implementation, no hardcoded fixed-memory constants).
+- Download: only the official `hf` CLI via `scripts/hf_download.py` — no `requests`/`urllib`
+  fallback.
+- Launcher server resolution: only PATH / `LLAMA_SERVER` / `~/bin/llama-server` — clear error when
+  absent, no dual path.
+- Fit-gate: same `KV_QUANT`/`kv_bytes_per_token()`/`tuned_context()` as the auto-tuner, plus a
+  dynamic total read from the card — no separate fit implementation, no hardcoded fixed-memory
+  constants.
