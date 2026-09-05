@@ -29,13 +29,26 @@
       `--dry`; keep `--alias llm-local`).
 - [ ] 9. Hermetic unit tests (`tests/test_llama_ai.py`): stub HF client + `hf` CLI
       (follow existing `LLAMA_MODELS_ROOT` / subprocess-stub conventions); assert
-      fit-gate rejects OOM candidates, excludes toy quants, picks the tier folder,
-      and calls the downloader with the right `repo_id/filename/dest/label`.
+      fit-gate rejects OOM candidates, excludes toy quants, and is **dynamic**
+      (reads real RAM from `sysctl hw.memsize`, rejects models that exceed the 
+      *actual* total), picks the tier folder, and calls the downloader with the right
+      `repo_id/filename/dest/label`.
+- [ ] 9b. Download-logic placement acceptance tests (A7): hermetic tests assert the
+      **exact filesystem result** — file at `~/{MODELS_ROOT}/<owner>/<family>/<TierGB>/`,
+      complete size (== HF size, no `.incomplete`/`.part`), `.progress.log` present,
+      `llama-ai --list` sees it, re-run is idempotent (no re-download), and different
+      size-fits land in different tier folders (no cross-tier contamination).
+- [ ] 9c. Dynamic GPU load + "hi" verification (A6): add a host/Metal check that reads
+      RAM (`sysctl hw.memsize` + `vm_stat`) before load, loads the downloaded model,
+      waits for `/health`, POSTs "hi", asserts a reply, and re-measures
+      post-load available memory to prove real headroom remained (fail + report
+      before/after numbers if it did not).
 - [ ] 10. README.md: add `--download-top-tier` workflow, the trend/fit/download
       behaviour, and the tier-folder layout entry for downloaded models.
 - [ ] 11. Sync PASS: issue body, OpenSpec change (proposal/spec/tasks), and code/files
       are consistent — any drift resolved before push.
 - [ ] 12. Verification (tick the moment done): `make openspec-validate
       NAME=feat-download-top-tier-trending-models` exits 0, every task here ticked,
-      `make lint` GREEN, `make test-unit` GREEN, and a hosted downloaded model that
-      "fits" actually runs via the host/Metal health path.
+      `make lint` GREEN, `make test-unit` GREEN, download-placement tests
+      (A7) all pass, and a downloaded model that "fits" actually runs via the
+      dynamic host/Metal load + "hi" + remaining-RAM check (A6) on the real card.
