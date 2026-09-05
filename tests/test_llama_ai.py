@@ -365,3 +365,30 @@ def test_discover_top_tier_min_trending_score_filters(monkeypatch):
     none = llama_ai.discover_top_tier(limit=5, total_ram_bytes=48 * 1024 ** 3,
                                       headroom_bytes=3 * 1024 ** 3, min_trending_score=400)
     assert none == []
+
+
+def test_discover_top_tier_one_per_provider(monkeypatch):
+    """discover_top_tier must return at most ONE candidate per provider (owner),
+    so a variety of popular providers is offered, not many quants of one."""
+    repos = [
+        {"repo": "unsloth/Qwen3.8-27B-GGUF", "downloads": 1, "likes": 1, "trendingScore": 300},
+        {"repo": "unsloth/Qwen3.8-27B-UD-GGUF", "downloads": 1, "likes": 1, "trendingScore": 280},
+        {"repo": "orcarouter/Qwen3.8-27B-Uncensored-GGUF", "downloads": 1, "likes": 1,
+         "trendingScore": 120},
+    ]
+
+    def fake_trending(limit=25):
+        return repos
+
+    def fake_files(repo):
+        return [{"path": "model-Q8_0.gguf", "size_bytes": 5 * 1024 ** 3, "size_gb": 5.0}]
+
+    monkeypatch.setattr(llama_ai, "_trending_gguf_repos", fake_trending)
+    monkeypatch.setattr(llama_ai, "_repo_gguf_files", fake_files)
+    monkeypatch.setattr(llama_ai, "MIN_TOP_TIER_GB", 1.0)
+
+    result = llama_ai.discover_top_tier(limit=5, total_ram_bytes=48 * 1024 ** 3,
+                                        headroom_bytes=3 * 1024 ** 3, min_trending_score=0)
+    owners = [c["repo"].split("/", 1)[0] for c in result]
+    assert owners == ["unsloth", "orcarouter"], "one candidate per provider, best owner first"
+    assert len(owners) == len(set(owners)), "no duplicate provider"

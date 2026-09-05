@@ -581,7 +581,17 @@ def discover_top_tier(limit=10, total_ram_bytes=None, headroom_bytes=None,
     # Rank by quality (largest fitting quant = highest fidelity that still fits),
     # then by trending score, so the strongest top-tier pick surfaces first.
     cands.sort(key=lambda c: (-c["size_gb"], -c["trendingScore"]))
-    return cands[:limit]
+    # Variety: one candidate per provider (owner), so we offer the best model from
+    # each of several popular providers rather than several quants of the same one.
+    seen = set()
+    by_provider = []
+    for c in cands:
+        owner = c["repo"].split("/", 1)[0]
+        if owner in seen:
+            continue
+        seen.add(owner)
+        by_provider.append(c)
+    return by_provider[:limit]
 
 
 def download_top_tier_candidate(cand, models_root=None):
@@ -717,10 +727,35 @@ def _main_download_top_tier(args):
                   f"{c['repo']}::{c['filename']}  -> {c['dest_path']}")
         print()
         return
-    # download each ranked candidate (idempotent) — real end-to-end.
+    # Download the top `limit` candidates (idempotent per provider). Any single
+    # failure is retried (up to RETRIES); already-completed downloads are never
+    # re-fetched (download_top_tier_candidate etag-checks the Hub), so a retry
+    # only resumes/completes the failed one. A persistent failure doesn't abort
+    # the batch — remaining providers are still attempted.
+    RETRIES = 3
+    completed = []
     for i, c in enumerate(cands, 1):
-        print(f"\n[{i}/{len(cands)}] downloading top-tier candidate:")
-        download_top_tier_candidate(c)
+        print(f"\n[{i}/{len(cands)}] downloading top-tier candidate: {c['repo']}::{c['filename']}")
+        ok = False
+        for attempt in range(1, RETRIES + 1):
+            try:
+                download_top_tier_candidate(c)
+                ok = True
+                break
+            except SystemExit as e:
+                print(f"  attempt {attempt}/{RETRIES} failed for {c['repo']}: "
+                      f"{str(e).splitlines()[0] if str(e) else 'download error'}",
+                      file=sys.stderr)
+                if attempt < RETRIES:
+                    time.sleep(2)
+        if ok:
+            completed.append(c)
+        else:
+            print(f"  SKIPPED {c['repo']} after {RETRIES} failed attempts.", file=sys.stderr)
+    if not completed:
+        print("[top-tier] nothing could be downloaded; not serving.")
+        sys.exit(1)
+    print(f"\n[top-tier] completed {len(completed)}/{len(cands)} provider(s).")
     if args.dry:
         print(f"\n[dry] downloaded/skipped {len(cands)} candidate(s); not serving (--dry).")
         return
@@ -730,10 +765,11 @@ def _main_download_top_tier(args):
     if not models:
         print("[top-tier] no .gguf found after download under {MODELS_ROOT}")
         sys.exit(1)
-    # pick the same file we downloaded (by exact path).
+    # pick the same file we downloaded (by exact path) — the best COMPLETED one.
     from pathlib import Path as _P
+    best = completed[0]
     chosen = next((m for m in models
-                   if _P(m["file"]).resolve() == _P(cands[0]["dest_path"]).resolve()), None)
+                   if _P(m["file"]).resolve() == _P(best["dest_path"]).resolve()), None)
     if chosen is None:
         # fall back to largest local model (should still be the just-downloaded one)
         chosen = models[0]
@@ -790,8 +826,10 @@ def main():
     ap.add_argument("--download-top-tier", action="store_true",
                     help="discover + download the currently-trending top-tier GGUF model(s) "
                          "that fit the actual GPU/CPU card, then serve (unless --list/--dry)")
-    ap.add_argument("--count", type=int, default=1,
-                    help="with --download-top-tier: number of ranked candidates to download")
+    ap.add_argument("--count", type=int, default=5,
+                    help="with --download-top-tier: number of distinct PROVIDERS' top models "
+                         "to download (one best-fitting model per provider, default 5 for "
+                         "variety of what's popular now)")
     ap.add_argument("--min-trending-score", type=int, default=0,
                     help="with --download-top-tier: only consider repos whose HF trendingScore "
                          "is >= this (0 = any trending that fits). A rating floor so niche/"

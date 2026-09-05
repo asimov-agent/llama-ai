@@ -107,7 +107,7 @@ def test_provider_placement_specific():
 def test_real_download_then_repeat_is_fast_and_safe():
     """Story: download a real top model, then run again without clobbering.
 
-    Given  I ask for the best trendy top-tier model that fits this machine,
+    Given  I ask for the smallest top-tier model that fits this machine,
     When   the tool downloads it for real into a by-owner/by-size folder,
     Then   the file must actually exist on disk, be a complete download (not a
            partial stub), and be in exactly the place we expected,
@@ -115,11 +115,14 @@ def test_real_download_then_repeat_is_fast_and_safe():
     Then   it must not error and must end up at the same place (idempotent).
     """
     _real_hf()
-    total = llama_ai.read_total_ram_bytes()
-    head = llama_ai.read_current_headroom_bytes(total)
-    cands = llama_ai.discover_top_tier(limit=1, total_ram_bytes=total, headroom_bytes=head)
-    assert cands, "expected a top-tier model to fit this machine"
-
+    # Use a SMALL card budget so the top-tier pick is the smallest fitting top-tier
+    # model (fast real download), appropriate for a CPU CI stage. Still a real,
+    # no-mock download of a genuine top-tier quant (>= MIN_TOP_TIER_GB).
+    small_total = 8 * 1024 ** 3         # simulate a small card to force a small fit
+    small_head = 1 * 1024 ** 3
+    cands = llama_ai.discover_top_tier(limit=1, total_ram_bytes=small_total,
+                                       headroom_bytes=small_head)
+    assert cands, "expected a small top-tier model to fit an 8 GB budget"
     final = llama_ai.download_top_tier_candidate(cands[0], models_root=None)
     assert Path(final).is_file(), f"downloaded file missing: {final}"
     size = Path(final).stat().st_size
