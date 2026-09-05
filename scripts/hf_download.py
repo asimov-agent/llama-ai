@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Download a GGUF into a tiered models folder with live progress + auto-resume/retry.
 
-Usage: hf_download.py <repo_id> <filename> <dest_dir> <label>
+Usage: hf_download.py <repo_id> <filename> <dest_dir> <label> [refresh]
+refresh: "1" -> ALWAYS consult the Hub (etag/hash) so a same-name file that was
+updated upstream (or a corrupt local copy) is re-fetched, not skipped. Leave a
+fully-fresh local file untouched (hf no-ops on matching etag).
 Reads HF_TOKEN from ~/.zshrc. Append progress to <dest_dir>/<label>.progress.log
 Uses HF_HUB_ENABLE_HF_TRANSFER=1 + HF_HUB_DISABLE_XET=1 for speed.
 Auto-retries on connection drop (rc!=0 while final .gguf absent), resuming the partial.
@@ -9,6 +12,7 @@ Auto-retries on connection drop (rc!=0 while final .gguf absent), resuming the p
 import subprocess, sys, os, re, time, shutil
 
 repo, filename, dest, label = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+refresh = (sys.argv[5] if len(sys.argv) > 5 else "0") == "1"
 
 tok = None
 try:
@@ -53,9 +57,14 @@ write_log(f"MODE download {repo} :: {filename} -> {dest}\nSTART {time.ctime()} |
 t_total = time.time()
 attempt = 1
 while attempt <= MAX_RETRY:
-    if os.path.exists(final_path):
+    # WITHOUT refresh: a fully-present file is treated as done (fast path).
+    # WITH refresh: always run `hf download` — it etag/checks the Hub and no-ops
+    # fast if the local file's content hash still matches; if the file was
+    # UPDATED upstream (even same filename + same size), the etag differs and hf
+    # re-fetches just that file. A mere existence check would mask that update.
+    if (not refresh) and os.path.exists(final_path):
         break  # already done
-    write_log(f"\n=== attempt {attempt} ({time.ctime()}) ===")
+    write_log(f"\n=== attempt {attempt} ({time.ctime()}) {('refresh' if refresh else 'plain')} ===")
     t0 = time.time()
     proc = subprocess.Popen(cmd, env=env,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)

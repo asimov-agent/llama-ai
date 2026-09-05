@@ -578,19 +578,18 @@ def discover_top_tier(limit=10, total_ram_bytes=None, headroom_bytes=None):
 
 
 def download_top_tier_candidate(cand, models_root=None):
-    """Download a top-tier candidate via the real hf CLI (idempotent).
+    """Download a top-tier candidate via the real hf CLI (etag-aware, idempotent).
 
-    Skips (no-op, returns existing path) if the exact .gguf is already at the
-    provider-aware destination. Otherwise shells out to scripts/hf_download.py
-    exactly like download_test_model.py does (one code path, no fallback).
+    ALWAYS delegates to scripts/hf_download.py in REFRESH mode, which runs
+    `hf download`. That command etag/content-hashes the file against the Hub:
+      - unchanged local file  -> hf no-ops fast, returns existing path
+      - file UPDATED upstream (even SAME filename + SAME size, new bytes)
+        -> the etag differs, hf re-fetches that one file
+    We deliberately do NOT skip on mere existence/size, because a size-only
+    guard would mask a same-name content update.
     """
     dest_dir = os.path.dirname(cand["dest_path"])
     final = cand["dest_path"]
-    # Idempotency requires a COMPLETE file (size == expected), not just >100MB — a
-    # partial download must be resumed, never treated as done.
-    if os.path.isfile(final) and os.path.getsize(final) >= cand["size_bytes"] - (64 * 1024 * 1024):
-        print(f"[top-tier] already present+complete: {final} ({os.path.getsize(final)/1e9:.2f} GB) -> done")
-        return final
     hf = (os.environ.get("HF_BIN") or "").strip() or shutil.which("hf")
     if not hf or not os.path.isfile(hf):
         # hf-env fallback used on the host (downloader also reads HF_BIN).
@@ -604,7 +603,7 @@ def download_top_tier_candidate(cand, models_root=None):
     os.environ["HF_BIN"] = hf   # downloader (hf_download.py) resolves HF_BIN to find hf
     dl = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hf_download.py")
     label = f"top-tier-{os.path.basename(final)}".replace(".gguf", "")[:40]
-    cmd = [sys.executable, dl, cand["repo"], cand["filename"], dest_dir, label]
+    cmd = [sys.executable, dl, cand["repo"], cand["filename"], dest_dir, label, "1"]
     print(f"[top-tier] downloading {cand['repo']}::{cand['filename']} -> {dest_dir} "
           f"({cand['size_gb']:.2f} GB, tier {cand['tier_folder']})")
     rc = subprocess.call(cmd)

@@ -100,3 +100,51 @@ def test_real_download_idempotent():
     # idempotent (already complete -> no re-download error, same path)
     final2 = llama_ai.download_top_tier_candidate(cand, models_root=None)
     assert final2 == final, "second download must be idempotent (same path)"
+
+
+def test_tiny_model_download_retest_and_update_recovery():
+    """Download a TINY real model, re-run idempotently, then simulate a same-name
+    content update and verify REFRESH mode re-fetches the CORRECT bytes.
+
+    Models the exact upstream scenario: same filename, same size, new content.
+    A size-only guard would silently keep the stale copy; this proves the
+    etag/content-hash path re-downloads the changed file. No mocks — real `hf`.
+    """
+    _real_hf()
+    TF = "2026-09-05-qwen05b-tinytest"
+    repo = "Qwen/Qwen2.5-0.5B-Instruct-GGUF"
+    fn = "qwen2.5-0.5b-instruct-q4_0.gguf"
+    # real size from the HF tree API
+    tree = llama_ai._repo_gguf_files(repo)
+    real = next(f for f in tree if f["path"] == fn)
+    cand = {
+        "repo": repo,
+        "filename": fn,
+        "size_bytes": real["size_bytes"],
+        "size_gb": real["size_gb"],
+        "tier_folder": "8GB",
+        "dest_path": f"/tmp/{TF}/Qwen/Qwen2.5-0.5B-Instruct-GGUF/8GB/{fn}",
+    }
+    Path(f"/tmp/{TF}").mkdir(parents=True, exist_ok=True)
+    try:
+        # 1. first real download
+        final = llama_ai.download_top_tier_candidate(cand, models_root=f"/tmp/{TF}")
+        assert os.path.isfile(final)
+        assert os.path.getsize(final) >= cand["size_bytes"] - (64 * 1024 * 1024)
+        good_bytes = open(final, "rb").read()
+        # 2. idempotent re-run -> same path, no error
+        final2 = llama_ai.download_top_tier_candidate(cand, models_root=f"/tmp/{TF}")
+        assert final2 == final
+        # 3. simulate SAME-NAME SAME-SIZE content update: overwrite with same-length rot13 garbage
+        corrupt = bytes((b ^ 0x5A) & 0xFF for b in good_bytes)
+        with open(final, "wb") as f:
+            f.write(corrupt)
+        assert os.path.getsize(final) == cand["size_bytes"]  # size unchanged
+        assert open(final, "rb").read() != good_bytes        # content IS different now
+        # 4. REFRESH mode must re-fetch the CORRECT bytes (etag differs, size same)
+        recovered = llama_ai.download_top_tier_candidate(cand, models_root=f"/tmp/{TF}")
+        assert recovered == final
+        assert open(final, "rb").read() == good_bytes, \
+            "refresh mode must re-download the correct bytes after a same-size content update"
+    finally:
+        shutil.rmtree(f"/tmp/{TF}", ignore_errors=True)
