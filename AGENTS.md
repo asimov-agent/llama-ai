@@ -76,6 +76,14 @@ Rules:
   - Treat any drift between the issue, the OpenSpec change, and the code/files as
     a workflow defect. The OpenSpec change is the referee: if there is a conflict,
     the code and the issue must conform to the OpenSpec change, not the reverse.
+  - **Alignment is a checked step, not an assumption (do it at every "done" claim).**
+    Before reporting an issue/PR as ready (and before `make loop` finalization),
+    *actively verify* the three artifacts agree: read the current issue body and diff
+    the key claims (goal, interface, requirements, acceptance) against
+    `proposal.md`/`spec.md`/`tasks.md`. Flag and fix any contradiction — do not assert
+    "aligned" without running the check. This applies to naming, requirements
+    (ADDED/MODIFIED/REM), constants/logic terms (e.g. dynamic-vs-hardcoded), and
+    acceptance wording.
   - When starting/resuming work, if the issue's goal and the OpenSpec change are
     out of sync, reconcile them FIRST (update whichever is behind to match the
     intended goal) before implementing.
