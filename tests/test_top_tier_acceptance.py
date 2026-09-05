@@ -222,3 +222,36 @@ def test_default_count_is_five():
     # help text documents the default 5 as prose: "model per provider, default 5 for variety"
     assert "default 5" in out, "launcher --help must document --count default 5"
     assert "--count" in out
+
+
+def test_download_progress_shows_percentage():
+    """Story: you can see how far the download has progressed.
+
+    Given  the downloader is fetching a real model,
+    When   it writes its progress,
+    Then   each progress line must include a 0-100% percentage (a quick readout of
+           how much is done), plus the size downloaded and speed — in the terminal.
+    """
+    _real_hf()
+    # run hf_download.py on the real 0.5B model in a temp dir with the expected-size arg
+    import tempfile
+    tmp = tempfile.mkdtemp(prefix="pcttest")
+    try:
+        # get real expected bytes from HF tree API
+        real = next(f for f in llama_ai._repo_gguf_files("Qwen/Qwen2.5-0.5B-Instruct-GGUF")
+                    if f["path"] == "qwen2.5-0.5b-instruct-q4_0.gguf")
+        dl = str(REPO / "scripts" / "hf_download.py")
+        out = subprocess.run(
+            [sys.executable, dl, "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
+             "qwen2.5-0.5b-instruct-q4_0.gguf", tmp, "pcttest", "0", str(real["size_bytes"])],
+            capture_output=True, text=True, timeout=240).stdout
+        # the live terminal progress must contain a percentage
+        assert "%" in out, f"download should print a % progress; got:\n{out[-600:]}"
+        # and the log file should too
+        import glob
+        logs = glob.glob(f"{tmp}/*.progress.log")
+        assert logs, "a .progress.log should exist"
+        logtxt = open(logs[0]).read()
+        assert "%" in logtxt, "progress.log should contain a % readout"
+    finally:
+        import shutil; shutil.rmtree(tmp, ignore_errors=True)
