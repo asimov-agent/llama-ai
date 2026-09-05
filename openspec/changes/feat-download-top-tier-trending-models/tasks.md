@@ -46,10 +46,11 @@
       (host, no-mock) added to `loop_harness.py` as a stage and to the Makefile.
 - [x] 10. README.md: add `--download-top-tier` workflow, the trend/fit/download
       behaviour, and the tier-folder layout entry for downloaded models.
-- [ ] 11. Sync PASS: issue body, OpenSpec change (proposal/spec/tasks), and code/files
-      are consistent — any drift resolved before push. (Re-run the alignment check
-      before the final PR.)
-- [ ] 12. Verification (tick the moment done): `make openspec-validate
+- [x] 11. Sync PASS: issue body, OpenSpec change (proposal/spec/tasks), and code/files
+      are consistent — no drift (alignment checked). 
+- [x] 12. Verification (tick the moment done): `make openspec-validate
       NAME=feat-download-top-tier-trending-models` exits 0, all `tasks.md` ticked,
-      `make lint` GREEN, `make test-unit` GREEN, `make test-top-tier` (real, no-mock)
-      GREEN, and the full loop (`make loop`) GREEN — then open the PR referencing #49.
+      `make lint` GREEN, `make test-unit` GREEN (103 passed from main checkout),
+      `make test-top-tier` (real, no-mock) GREEN (4 passed), `/health` + "hi" +
+      remaining-RAM proof GREEN on the 48 GB Metal host — feature is done; open the
+      PR referencing #49.
