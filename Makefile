@@ -174,6 +174,14 @@ test-install-host: ## Verify the REAL host install (make install) — runs on th
 	@echo "==> Verifying host install artifacts via tests/test_install.py"
 	@$(PY) -m pytest tests/test_install.py -p no:cacheprovider -q
 
+test-top-tier: ## REAL top-tier acceptance (no mocks): live HF trending + fit gate + provider-aware download + placement
+	# Host-side acceptance for --download-top-tier (issue #49): hits the live
+	# Hugging Face API, the real `hf` downloader, and the real card's memory.
+	# Set HF_BIN=/abs/path/to/hf when `hf` is not on PATH.
+	@echo "==> Running top-tier acceptance tests (real, no mocks)"
+	@HF_BIN="$${HF_BIN:-$(shell command -v hf || echo $(HOME)/models/hf-env/bin/hf)}" \
+		$(PY) -m pytest tests/test_top_tier_acceptance.py -p no:cacheprovider -q -m acceptance
+
 test-health: ## End-to-end CPU health check: ensure model, then tiny model answers 'hi' (containerized)
 	$(TEST_RUN) sh -c 'python scripts/download_test_model.py && python -m pytest tests/test_health.py -p no:cacheprovider -q -s'
 
