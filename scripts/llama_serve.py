@@ -523,14 +523,18 @@ def _split_repo(repo):
     return repo, repo
 
 
-def discover_top_tier(limit=10, total_ram_bytes=None, headroom_bytes=None):
+def discover_top_tier(limit=10, total_ram_bytes=None, headroom_bytes=None,
+                      min_trending_score=0):
     """Ranked top-tier GGUF candidates that FIT the card, with real file sizes.
 
     Combines the three signals (trending + top-tier family + fit gate) using the
     dynamic total/headroom read from the card. Returns a list of dicts:
       {repo, filename, size_gb, size_bytes, downloads, likes,
        trendingScore, tier_folder, dest_path}
-    sorted by trendingScore desc.
+    sorted by the "top tier" order: highest-fidelity (largest) fit first, then by
+    trendingScore, so the strongest pick surfaces first. `limit` = how many to return;
+    `min_trending_score` = only repos with trendingScore >= this are considered (a
+    "rated high enough" floor so niche/unrated models don't show).
     """
     total = total_ram_bytes if total_ram_bytes is not None else read_total_ram_bytes()
     head = headroom_bytes if headroom_bytes is not None else read_current_headroom_bytes(total)
@@ -538,6 +542,9 @@ def discover_top_tier(limit=10, total_ram_bytes=None, headroom_bytes=None):
 
     cands = []
     for repo_info in _trending_gguf_repos(limit=limit * 3):
+        # rating floor: only repos that are genuinely trending (trendingScore >= threshold)
+        if repo_info["trendingScore"] < min_trending_score:
+            continue
         repo = repo_info["repo"]
         try:
             files = _repo_gguf_files(repo)
@@ -693,7 +700,8 @@ def _main_download_top_tier(args):
     head = read_current_headroom_bytes()
     print(f"[top-tier] total RAM = {total/(1024**3):.0f} GB, headroom (wired+safety) = "
           f"{head/(1024**3):.1f} GB")
-    cands = discover_top_tier(limit=limit, total_ram_bytes=total, headroom_bytes=head)
+    cands = discover_top_tier(limit=limit, total_ram_bytes=total, headroom_bytes=head,
+                              min_trending_score=args.min_trending_score)
     if not cands:
         print("[top-tier] no trending top-tier GGUF model fits the available card right now. "
               "Nothing downloaded.")
@@ -781,6 +789,10 @@ def main():
                          "that fit the actual GPU/CPU card, then serve (unless --list/--dry)")
     ap.add_argument("--count", type=int, default=1,
                     help="with --download-top-tier: number of ranked candidates to download")
+    ap.add_argument("--min-trending-score", type=int, default=0,
+                    help="with --download-top-tier: only consider repos whose HF trendingScore "
+                         "is >= this (0 = any trending that fits). A rating floor so niche/"
+                         "unrated models don't show.")
     args = ap.parse_args()
 
     # --download-top-tier path (trending + top-tier family + dynamic fit gate).

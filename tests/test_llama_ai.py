@@ -327,3 +327,41 @@ def test_resolve_bad_env_raises_systemexit(monkeypatch, tmp_path):
     monkeypatch.setenv("LLAMA_SERVER", str(tmp_path / "does-not-exist"))
     with pytest.raises(SystemExit):
         llama_ai.resolve_llama_server()
+
+
+# ---------------------------------------------------------------------------
+# top-tier discovery: min_trending_score rating floor
+# ---------------------------------------------------------------------------
+def test_discover_top_tier_min_trending_score_filters(monkeypatch):
+    """discover_top_tier must drop repos below the rating floor."""
+    repos = [
+        {"repo": "unsloth/Qwen3.8-27B-GGUF", "downloads": 1, "likes": 1, "trendingScore": 300},
+        {"repo": "orcarouter/Qwen3.8-27B-Uncensored-GGUF", "downloads": 1, "likes": 1,
+         "trendingScore": 120},
+    ]
+
+    def fake_trending(limit=25):
+        return repos
+
+    def fake_files(repo):
+        return [{"path": f"{repo.split('/')[-1]}-Q8_0.gguf", "size_bytes": 5 * 1024 ** 3,
+                 "size_gb": 5.0}]
+
+    monkeypatch.setattr(llama_ai, "_trending_gguf_repos", fake_trending)
+    monkeypatch.setattr(llama_ai, "_repo_gguf_files", fake_files)
+    monkeypatch.setattr(llama_ai, "MIN_TOP_TIER_GB", 1.0)
+
+    # no floor -> both fit and are returned, sorted by size (tie -> trend desc)
+    all = llama_ai.discover_top_tier(limit=5, total_ram_bytes=48 * 1024 ** 3,
+                                     headroom_bytes=3 * 1024 ** 3, min_trending_score=0)
+    assert len(all) == 2
+
+    # floor 200 -> only the 300-rated repo survives
+    rated = llama_ai.discover_top_tier(limit=5, total_ram_bytes=48 * 1024 ** 3,
+                                       headroom_bytes=3 * 1024 ** 3, min_trending_score=200)
+    assert [c["repo"] for c in rated] == ["unsloth/Qwen3.8-27B-GGUF"]
+
+    # floor 400 -> nothing survives
+    none = llama_ai.discover_top_tier(limit=5, total_ram_bytes=48 * 1024 ** 3,
+                                      headroom_bytes=3 * 1024 ** 3, min_trending_score=400)
+    assert none == []

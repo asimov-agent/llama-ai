@@ -114,3 +114,21 @@ jobs:
         run: make test-health
       - name: Prune orphaned test containers
         run: make test-clean
+
+  # ------------------------------------------------------------------
+  # top-tier: REAL (no-mock) top-tier acceptance (issue #49) — live HF
+  # trending + dynamic fit gate + provider-aware placement + real `hf`
+  # download, containerized/CPU. Deterministic card size (16 GB) so any runner
+  # passes; no mock/skip.
+  # ------------------------------------------------------------------
+  top-tier:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build test image (bundles hf + gguf)
+        run: make test-image
+      - name: make test-top-tier-ci (real acceptance, no mocks, CPU)
+        run: make test-top-tier-ci
+      - name: Prune orphaned test containers
+        run: make test-clean

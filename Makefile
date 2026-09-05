@@ -182,6 +182,13 @@ test-top-tier: ## REAL top-tier acceptance (no mocks): live HF trending + fit ga
 	@HF_BIN="$${HF_BIN:-$(shell command -v hf || echo $(HOME)/models/hf-env/bin/hf)}" \
 		$(PY) -m pytest tests/test_top_tier_acceptance.py -p no:cacheprovider -q -m acceptance
 
+test-top-tier-ci: ## REAL top-tier acceptance inside the test container (CI/CPU). `hf` + gguf are bundled in the image.
+	# Pin a deterministic card size (16 GB, the documented LLAMA_RAM_BYTES override) so the
+	# fit gate deterministically offers top-tier models on any CI runner regardless of its
+	# actual free RAM — still a REAL `hf` download, no mock. On the dev host use `test-top-tier`
+	# (no pin) so it uses the real card.
+	$(TEST_RUN) sh -c 'LLAMA_RAM_BYTES=17179869184 python -m pytest tests/test_top_tier_acceptance.py -p no:cacheprovider -q -m acceptance'
+
 test-health: ## End-to-end CPU health check: ensure model, then tiny model answers 'hi' (containerized)
 	$(TEST_RUN) sh -c 'python scripts/download_test_model.py && python -m pytest tests/test_health.py -p no:cacheprovider -q -s'
 

@@ -18,12 +18,18 @@ constants.
 WHEN a user runs `llama-ai --download-top-tier`, THEN the launcher queries a time-bounded HF
 trending signal (`sort=trendingScore`, `filter=gguf`), filters to flagship/large families
 (Qwen3/DeepSeek/Mistral/Llama/Gemma/gpt-oss/Phi/QwQ/GLM...), excludes non-trivial-toy quants
-(`MIN_TOP_TIER_GB`, no multi-file shards / vision projectors), and applies the fit+buffer gate so
-only models that fit the machine's unified memory with KV-cache headroom are offered.
+(`MIN_TOP_TIER_GB`, no multi-file shards / vision projectors), applies the fit+buffer gate so
+only models that fit the machine's unified memory with KV-cache headroom are offered, and ranks
+them (highest-fidelity that fits first, then trendingScore).
+
+**How many / how rated:** `--count N` (default 1) downloads the top N that fit; `--min-trending-score N`
+(default 0) sets a rating floor — only repos with HF `trendingScore >= N` are considered, so
+niche/unrated models don't show. `--list` prints the ranked candidates (repo, filename, size,
+trendingScore, tier) without downloading.
 
 #### Scenario: On the dynamic total (48 GB host), a 35B Q5_K_M (~24 GB) is offered; a 70B Q8
-(over the total minus headroom minus KV) and a 0.5B toy are not. `--list` prints ranked candidates
-(repo, filename, size, tier) without downloading.
+(over the total minus headroom minus KV) and a 0.5B toy are not. `--count 3 --list` shows at most
+3 ranked picks; `--min-trending-score 250` drops any pick below a trendingScore of 250.
 
 ### Requirement: A2 — Dynamic memory detection + fit + buffer gate
 WHEN judging fit, THEN it reads the machine's real memory at runtime, not a fixed size, leaving
