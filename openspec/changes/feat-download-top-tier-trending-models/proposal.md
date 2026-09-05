@@ -36,11 +36,13 @@ llama-ai --download-top-tier --count 5      # download the top 5 that fit
 - **Top-tier gate**: candidate must be a flagship/large popular family (Qwen3,
   DeepSeek-R1 distill, Mistral Small/Large, Llama 3.3, Gemma 3, gpt-oss, Phi, QwQ,
   etc.) and its chosen quant file must be non-trivial (excludes sub-1B toy quants).
-- **Fit + buffer gate, from the model's own metadata (two stages)**: pre-download the
+- **Fit + buffer gate (dynamic), from the model's own metadata (two stages)**: the
+  real total is read at runtime from the card (`sysctl hw.memsize`, `LLAMA_RAM_BYTES`
+  override) with current-pressure headroom (`vm_stat`) — NOT hardcoded. Pre-download:
   HF repo per-file `size` + family parameter count must satisfy
-  `size_bytes + OS_OVERHEAD + KV_reserve <= TOTAL_RAM_BYTES`; post-download
-  `read_model_meta_fast()` + `tuned_context()` re-derive the exact context. Constants
-  `TOTAL_RAM_BYTES`=48 GB, `OS_OVERHEAD`=3 GB, `KV_QUANT` are the launcher's own.
+  `size_bytes + headroom + KV_reserve <= read_total_ram()`; post-download:
+  `read_model_meta_fast()` + `tuned_context()` re-derive the exact context. Reuse
+  `KV_QUANT`/`kv_bytes_per_token()` as the single fit implementation.
 - **Download**: delegate to the existing `scripts/hf_download.py` exactly like
   `download_test_model.py` (resolve `HF_BIN` via `shutil.which("hf")`, set
   `HF_HUB_ENABLE_HF_TRANSFER=1`, read `HF_TOKEN` from `~/.zshrc`); abort if `hf`

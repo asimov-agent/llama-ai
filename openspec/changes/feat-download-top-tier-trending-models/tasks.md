@@ -15,11 +15,13 @@
       downloader implementation.
 - [ ] 5. Top-tier gate: flagship/large family allow-list + non-trivial quant file
       rule (excludes sub-1B toy quants).
-- [ ] 6. Fit + buffer gate (two-stage, model's own metadata): pre-download accept only if
-      `size_bytes + OS_OVERHEAD + KV_reserve <= TOTAL_RAM_BYTES` (size from HF per-file
-      metadata + family param count); post-download re-derive exact context via
-      `read_model_meta_fast()` + `tuned_context()`; reuse launcher `TOTAL_RAM_BYTES`/
-      `OS_OVERHEAD`/`KV_QUANT` constants.
+- [ ] 6. Fit + buffer gate (two-stage, model's own metadata, **dynamic**): pre-download
+      accept only if `size_bytes + headroom + KV_reserve <= read_total_ram()` where
+      `read_total_ram()` reads the actual card (`sysctl hw.memsize`, `LLAMA_RAM_BYTES`
+      override) and headroom comes from current pressure (`vm_stat`), NOT hardcoded
+      constants; post-download re-derive exact context via `read_model_meta_fast()` +
+      `tuned_context()`. Reuse `KV_QUANT`/`kv_bytes_per_token()` as the single fit
+      implementation.
 - [ ] 7. Download path: delegate to `scripts/hf_download.py` exactly like
       `download_test_model.py`; abort with clear error if `hf` absent. Place into
       provider-aware `~/{MODELS_ROOT}/<owner>/<model-family>/<TierGB>/` (owner = HF repo

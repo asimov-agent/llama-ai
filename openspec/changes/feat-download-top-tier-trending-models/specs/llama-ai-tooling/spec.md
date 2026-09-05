@@ -12,9 +12,11 @@ of a low-tier picker.
 
 The change reuses the repo's established building blocks: the `hf`
 (huggingface_hub) CLI via `scripts/hf_download.py`, the tiered `~/models`
-folder layout, and the launcher's existing fit/KV math (`TOTAL_RAM_BYTES`,
-`OS_OVERHEAD`, `kv_bytes_per_token()`, `tuned_context()`, `build_command()`). It
-adds no second downloader implementation (the repo's "no fallback" rule is preserved).
+folder layout, and the launcher's existing fit/KV math (`kv_bytes_per_token()`,
+`tuned_context()`, `build_command()`), now backed by a **dynamic** total-memory read
+(the card's real size via `sysctl hw.memsize`, plus current-pressure headroom via
+`vm_stat`) instead of hardcoded constants. It adds no second downloader
+implementation (the repo's "no fallback" rule is preserved).
 
 ---
 
@@ -27,8 +29,9 @@ filters to flagship/large popular families, filters to candidate `.gguf` files w
 quant file is non-trivial (no sub-1B toy quants), and applies the fit+buffer gate so
 only models that fit the machine's unified memory with KV-cache headroom are offered.
 
-#### Scenario: On the 48 GB host, a 35B Q5_K_M (~24 GB) model is offered, but a 70B
-Q8 (would exceed `TOTAL_RAM_BYTES - OS_OVERHEAD` with KV) and a 0.5B toy quant are not.
+#### Scenario: On the dynamic total (48 GB host), a 35B Q5_K_M (~24 GB) model is offered
+(because it fits `read_total_ram()` with KV headroom), but a 70B Q8 (would exceed the
+dynamic total minus headroom minus KV) and a 0.5B toy quant are not.
 
 #### Scenario: `llama-ai --download-top-tier --list` prints the ranked candidates that
 would fit (repo_id, filename, size_gb, quant, tier) without downloading.
@@ -192,5 +195,6 @@ WHEN the download path runs, THEN it uses only the official `hf` (huggingface_hu
 CLI via `scripts/hf_download.py` — no `requests`/`urllib` fallback downloader.
 WHEN the launcher resolves its server, THEN it uses only PATH / `LLAMA_SERVER` /
 `~/bin/llama-server`, terminating with a clear error when absent (no dual path).
-WHEN the fit-gate judges a model, THEN it uses the same `TOTAL_RAM_BYTES` /
-`OS_OVERHEAD` / `KV_QUANT` constants as the auto-tuner (no separate fit implementation).
+WHEN the fit-gate judges a model, THEN it uses the same fit implementation as the
+auto-tuner — `KV_QUANT`/`kv_bytes_per_token()`/`tuned_context()` plus a dynamic total
+read from the card (no separate fit implementation, no hardcoded fixed-memory constants).
