@@ -623,7 +623,8 @@ def download_top_tier_candidate(cand, models_root=None):
     os.environ["HF_BIN"] = hf   # downloader (hf_download.py) resolves HF_BIN to find hf
     dl = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hf_download.py")
     label = f"top-tier-{os.path.basename(final)}".replace(".gguf", "")[:40]
-    cmd = [sys.executable, dl, cand["repo"], cand["filename"], dest_dir, label, "1"]
+    cmd = [sys.executable, dl, cand["repo"], cand["filename"], dest_dir, label, "1",
+       str(cand.get("size_bytes", ""))]
     print(f"[top-tier] downloading {cand['repo']}::{cand['filename']} -> {dest_dir} "
           f"({cand['size_gb']:.2f} GB, tier {cand['tier_folder']})")
     rc = subprocess.call(cmd)

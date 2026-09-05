@@ -14,6 +14,9 @@ import subprocess, sys, os, re, time, shutil
 
 repo, filename, dest, label = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 refresh = (sys.argv[5] if len(sys.argv) > 5 else "0") == "1"
+# Optional expected total bytes (for a 0-100% progress readout). If absent we query
+# the HF API for the file size.
+expected_bytes = int(sys.argv[6]) if len(sys.argv) > 6 and str(sys.argv[6]).isdigit() else None
 
 tok = None
 try:
@@ -55,6 +58,31 @@ def tree_bytes(path):
             total += os.path.getsize(os.path.join(root, f))
     return total
 
+# ---------------------------------------------------------------------------
+# Resolve the total size so progress can report 0-100%.
+# ---------------------------------------------------------------------------
+def resolve_expected_bytes():
+    if expected_bytes and expected_bytes > 0:
+        return expected_bytes
+    # Query the HF model tree API for this file's size.
+    import json
+    import urllib.request
+    try:
+        url = f"https://huggingface.co/api/models/{repo}/tree/main?recursive=true"
+        req = urllib.request.Request(url, headers={"User-Agent": f"llama-ai/{label}"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            data = json.load(r)
+        for f in data:
+            if f.get("path", "").endswith(filename) and f.get("size"):
+                return int(f["size"])
+    except Exception:
+        pass
+    return None
+
+
+TOTAL_BYTES = resolve_expected_bytes()
+
+
 def write_log(msg):
     os.makedirs(dest, exist_ok=True)   # ensure the log dir exists (e.g. after interruption)
     with open(log, "a") as lf:
@@ -84,8 +112,14 @@ while attempt <= MAX_RETRY:
         if now - last_log >= 5:
             dt = now - t0
             mbps = total / dt / 1e6 if dt > 0 else 0
-            write_log(f"[{time.strftime('%H:%M:%S')}] {total/1e9:.2f} GB so far | "
-                      f"{mbps:.1f} MB/s | attempt {attempt} | running {dt/60:.1f} min")
+            if TOTAL_BYTES:
+                pct = min(100.0, total / TOTAL_BYTES * 100)
+                write_log(f"[{time.strftime('%H:%M:%S')}] {pct:5.1f}% "
+                          f"({total/1e9:6.2f}/{TOTAL_BYTES/1e9:.2f} GB) | "
+                          f"{mbps:.1f} MB/s | attempt {attempt} | running {dt/60:.1f} min")
+            else:
+                write_log(f"[{time.strftime('%H:%M:%S')}] {total/1e9:6.2f} GB so far | "
+                          f"{mbps:.1f} MB/s | attempt {attempt} | running {dt/60:.1f} min")
             # stall watch (no growth ~60s)
             if total == last_bytes:
                 pass  # will accumulate stall detection below
