@@ -6,7 +6,8 @@ refresh: "1" -> ALWAYS consult the Hub (etag/hash) so a same-name file that was
 updated upstream (or a corrupt local copy) is re-fetched, not skipped. Leave a
 fully-fresh local file untouched (hf no-ops on matching etag).
 Reads HF_TOKEN from ~/.zshrc. Append progress to <dest_dir>/<label>.progress.log
-Uses HF_HUB_ENABLE_HF_TRANSFER=1 + HF_HUB_DISABLE_XET=1 for speed.
+Uses HF_XET_HIGH_PERFORMANCE=1 (hf-xet chunked parallel) for speed — never
+HF_HUB_DISABLE_XET (would force slow single-stream download).
 Auto-retries on connection drop (rc!=0 while final .gguf absent), resuming the partial.
 """
 import subprocess, sys, os, re, time, shutil
@@ -27,8 +28,14 @@ log = os.path.join(dest, f"{label}.progress.log")
 env = dict(os.environ)
 if tok:
     env["HF_TOKEN"] = tok
-env["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
-env["HF_HUB_DISABLE_XET"] = "1"
+# Speed: hf-xet (chunked parallel transfer) is ON by default in huggingface_hub.
+# Enable its HIGH-PERFORMANCE mode (the modern flag; HF_HUB_ENABLE_HF_TRANSFER is
+# deprecated and no longer used), and never set HF_HUB_DISABLE_XET=1 (that forced
+# the slow single-stream path). A single large .gguf then downloads across many
+# parallel connections.
+env["HF_XET_HIGH_PERFORMANCE"] = "1"
+env.pop("HF_HUB_ENABLE_HF_TRANSFER", None)
+env.pop("HF_HUB_DISABLE_XET", None)
 
 HF_BIN = os.environ.get("HF_BIN") or shutil.which("hf")
 if not HF_BIN or not os.path.isfile(HF_BIN):
