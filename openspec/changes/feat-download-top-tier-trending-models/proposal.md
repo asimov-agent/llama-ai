@@ -36,18 +36,19 @@ llama-ai --download-top-tier --count 5      # download the top 5 that fit
 - **Top-tier gate**: candidate must be a flagship/large popular family (Qwen3,
   DeepSeek-R1 distill, Mistral Small/Large, Llama 3.3, Gemma 3, gpt-oss, Phi, QwQ,
   etc.) and its chosen quant file must be non-trivial (excludes sub-1B toy quants).
-- **Fit + buffer gate (reuses the launcher's existing math)**: predicted `size_gb`
-  (from HF file metadata) must satisfy `size_bytes + OS_OVERHEAD + kv_budget >= 0`,
-  i.e. `size_gb <= TOTAL_RAM_BYTES - OS_OVERHEAD` with the KV-cache allowance
-  computed from `kv_bytes_per_token()` × `tuned_context()`. The 48 GB default, 3 GB
-  overhead and `KV_QUANT` come from the existing `TOTAL_RAM_BYTES`/`OS_OVERHEAD`
-  constants.
+- **Fit + buffer gate, from the model's own metadata (two stages)**: pre-download the
+  HF repo per-file `size` + family parameter count must satisfy
+  `size_bytes + OS_OVERHEAD + KV_reserve <= TOTAL_RAM_BYTES`; post-download
+  `read_model_meta_fast()` + `tuned_context()` re-derive the exact context. Constants
+  `TOTAL_RAM_BYTES`=48 GB, `OS_OVERHEAD`=3 GB, `KV_QUANT` are the launcher's own.
 - **Download**: delegate to the existing `scripts/hf_download.py` exactly like
   `download_test_model.py` (resolve `HF_BIN` via `shutil.which("hf")`, set
   `HF_HUB_ENABLE_HF_TRANSFER=1`, read `HF_TOKEN` from `~/.zshrc`); abort if `hf`
   absent (no fallback downloader — one code path).
-- **Destination/tier folder**: `~/{MODELS_ROOT}/<Family>/<TierGB>/` matching the
-  computed fitting tier (8/16/24/48 GB) so `scan_models()` immediately sees it.
+- **Destination/tier folder (provider-aware)**: `~/{MODELS_ROOT}/<owner>/<model-family>/<TierGB>/`
+  where `<owner>` is the HF repo owner who created/quantized the model (e.g. `unsloth`,
+  `OBLITERATUS`), so provenance is clear; `<TierGB>` is the computed fitting tier
+  (8/16/24/48). `scan_models()` (os.walk at any depth) sees the file immediately.
 - **Serve after download**: reuse `build_command()` + the existing `main()` flow so
   `--download-top-tier` can fetch and serve in one invocation.
 

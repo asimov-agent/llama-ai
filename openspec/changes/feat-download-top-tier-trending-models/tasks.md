@@ -15,12 +15,15 @@
       downloader implementation.
 - [ ] 5. Top-tier gate: flagship/large family allow-list + non-trivial quant file
       rule (excludes sub-1B toy quants).
-- [ ] 6. Fit + buffer gate: reuse `kv_bytes_per_token()` × `tuned_context()` with
-      `TOTAL_RAM_BYTES`/`OS_OVERHEAD`; accept only if
-      `size_bytes + OS_OVERHEAD + kv_alloc <= TOTAL_RAM_BYTES`.
+- [ ] 6. Fit + buffer gate (two-stage, model's own metadata): pre-download accept only if
+      `size_bytes + OS_OVERHEAD + KV_reserve <= TOTAL_RAM_BYTES` (size from HF per-file
+      metadata + family param count); post-download re-derive exact context via
+      `read_model_meta_fast()` + `tuned_context()`; reuse launcher `TOTAL_RAM_BYTES`/
+      `OS_OVERHEAD`/`KV_QUANT` constants.
 - [ ] 7. Download path: delegate to `scripts/hf_download.py` exactly like
       `download_test_model.py`; abort with clear error if `hf` absent. Place into
-      `~/{MODELS_ROOT}/<Family>/<TierGB>/` (fitting tier).
+      provider-aware `~/{MODELS_ROOT}/<owner>/<model-family>/<TierGB>/` (owner = HF repo
+      owner who created/quantized it).
 - [ ] 8. Serve-after-download: reuse `build_command()` + existing `main()` flow so
       `--download-top-tier` can fetch and serve in one invocation (honor `--port`,
       `--dry`; keep `--alias llm-local`).

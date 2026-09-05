@@ -33,15 +33,22 @@ Q8 (would exceed `TOTAL_RAM_BYTES - OS_OVERHEAD` with KV) and a 0.5B toy quant a
 #### Scenario: `llama-ai --download-top-tier --list` prints the ranked candidates that
 would fit (repo_id, filename, size_gb, quant, tier) without downloading.
 
-### Requirement: A2 — Fit + buffer gate reuses the launcher's existing memory math
-WHEN judging whether a candidate fits, THEN it is accepted only if
-`predicted_size_bytes + OS_OVERHEAD + kv_allocation <= TOTAL_RAM_BYTES`, where
-`TOTAL_RAM_BYTES = 48 * 1024^3` (default) and `OS_OVERHEAD = 3 * 1024^3`, and the KV
-allowance uses `kv_bytes_per_token()` with `tuned_context()` — the same constants and
-functions the launcher's auto-tuner already uses.
+### Requirement: A2 — Fit + buffer gate uses the model's own metadata, in two stages
+WHEN a candidate is judged for fit, THEN it is accepted only if it leaves KV-cache
+headroom, AND the judgement uses the model's own GGUF metadata (not a guess):
+**pre-download** (no local file yet) it used the HF repo per-file **size** + family
+parameter count with a conservative KV reserve, i.e.
+`predicted_size_bytes + OS_OVERHEAD + KV_reserve <= TOTAL_RAM_BYTES`; **post-download**
+it re-derives the exact fitted context from the real GGUF header via
+`read_model_meta_fast()` + `tuned_context()`. The constants `TOTAL_RAM_BYTES = 48 GB`,
+`OS_OVERHEAD = 3 GB`, `KV_QUANT` and the `kv_bytes_per_token()` function are the same ones
+the launcher's auto-tuner already uses (one fit implementation).
 
-#### Scenario: A model whose size alone fits but whose size + KV allowance + overhead
-exceeds 48 GB is rejected, so it is never downloaded to then OOM on load.
+#### Scenario: A model whose HF size alone fits but whose size + KV reserve + overhead exceeds
+48 GB is rejected pre-download, so it never enters the download queue.
+
+#### Scenario: A downloaded model is re-parsed with `read_model_meta_fast()`; if it still would
+not fit (edge case), the launcher reports it clearly instead of serving an OOM launch.
 
 ### Requirement: A3 — Download through the existing `hf`-CLI downloader (one code path)
 WHEN the user selects a candidate to download, THEN it is fetched via
@@ -56,14 +63,17 @@ fallback downloader), set `HF_HUB_ENABLE_HF_TRANSFER=1` + `HF_HUB_DISABLE_XET=1`
 #### Scenario: `hf` is absent; the command fails fast with an actionable error instead
 of invoking a second downloader.
 
-### Requirement: A4 — Tier-folder placement + immediate serveability
+### Requirement: A4 — Provider-aware tier-folder placement + immediate serveability
 WHEN a model is downloaded via `--download-top-tier`, THEN it lands in
-`~/{MODELS_ROOT}/<Family>/<TierGB>/` where `<TierGB>` is the fitting tier
-(8/16/24/48 GB), so the existing `scan_models()` picker and the auto-tuner see it
-immediately.
+`~/{MODELS_ROOT}/<owner>/<model-family>/<TierGB>/` where `<owner>` is the HF repo owner
+(who created/quantized the model, e.g. `unsloth`, `OBLITERATUS`), `<model-family>` is the
+family, and `<TierGB>` is the computed fitting tier (8/16/24/48). Because `scan_models()`
+uses `os.walk(MODELS_ROOT)` at any depth, the downloaded model is immediately visible to
+the existing picker and auto-tuner with no scanner change.
 
-#### Scenario: A 24 GB fit is downloaded to `~/models/<Family>/24GB/`; `llama-ai --list`
-shows it as a selectable model.
+#### Scenario: `unsloth/Qwen3.8-27B-GGUF` Q8_0 is downloaded to
+`~/models/unsloth/Qwen3.8-27B/48GB/Qwen3.8-27B-Q8_0.gguf`; `llama-ai --list` shows it as a
+selectable model, and the owner is obvious from the path.
 
 ### Requirement: A5 — Serve after download (single invocation)
 WHEN `--download-top-tier` downloads a model that also serves (not `--list`-only),
