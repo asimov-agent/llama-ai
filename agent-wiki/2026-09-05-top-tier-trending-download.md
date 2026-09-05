@@ -5,37 +5,30 @@ Issue #49: `llama-ai --download-top-tier` finds trending top-tier GGUF models th
 actual GPU/CPU card (with KV buffer), downloads them (provider-aware), serves them.
 
 ## Implemented (committed on feat/make-the-llama-ai-download-the-top-tier-models-bas)
-- `scripts/llama_serve.py`:
-  - `read_total_ram_bytes()` dynamic total (sysctl hw.memsize / /proc/meminfo / LLAMA_RAM_BYTES)
-  - `read_current_headroom_bytes()` wired+safety, floor=OS_OVERHEAD(3GB), cap=45% total
-  - `discover_top_tier()` live HF trendingScore (filter=gguf) + top-tier family + fit gate,
-    ranks by quality then trend, single-file only (no shards/mmproj)
-  - `provider_dest_path()`/`pick_tier_folder()` provider-aware <owner>/<family>/<TierGB>
-  - `download_top_tier_candidate()` real hf CLI, idempotent against FULL size (resume partial)
-  - `_main_download_top_tier()` + `--download-top-tier/--count/--dry/--port` + serve `_serve_chosen`
-- `tests/test_top_tier_acceptance.py` REAL no-mock acceptance (live HF + real hf download)
-- pytest.ini `acceptance` marker; Makefile `test-top-tier` target; README section
+- `scripts/llama_serve.py`: `--download-top-tier/--count/--min-trending-score/--dry/--port`;
+  dynamic `read_total_ram_bytes()`/`read_current_headroom_bytes()`; `discover_top_tier()`
+  (trending + top-tier family + fit gate + rating floor, single-file); provider-aware
+  `provider_dest_path()`/`pick_tier_folder()`; `download_top_tier_candidate()` refresh-aware
+  (etag, re-fetches same-name/same-size updates, restores corruption); `_serve_chosen()`.
+- `scripts/hf_download.py`: optional `refresh` arg ("1" -> always etag-checks the Hub).
+- `tests/test_top_tier_acceptance.py`: 5 REAL no-mock tests (Given/When/Then readable).
+- `tests/test_llama_ai.py`: hermetic unit test for min_trending_score filter.
+- `Makefile`: `test-top-tier` (host) + `test-top-tier-ci` (containerized, deterministic 16GB).
+- `.github/workflows/ci.yml`: added `top-tier` job.
+- `loop_harness.py`: `top-tier` stage.
 
-## REAL end-to-end proof (host, 48 GB Metal) — completed
-Command: `llama-ai --download-top-tier --count 1 --port 18080`
-1. Discovered top-tier pick via live HF trending + dynamic fit:
-   `unsloth/Qwen3.8-27B-GGUF` -> `Qwen3.8-27B-UD-Q8_K_XL.gguf`.
-2. REAL download (73 min @6.5MB/s) -> `~/models/unsloth/Qwen3.8-27B-GGUF/48GB/`.
-   Byte-for-byte match vs HF tree size (31,457,991,680 bytes). Provider-aware path OK.
-3. Second run: skipped re-download (idempotent, size==expected), served on :18080.
-   `llama_server: model loaded`, listening on :18080. /health {"status":"ok"}.
-4. POST "hi" -> reply "Hi there! How" . Load proof: wired RAM 2.8GB -> 37GB (model resident),
-   FREE+INACTIVE ~3.9GB headroom remained (NOT exhausted).
-5. `--list` now shows it: 29.30 GiB /Users/andy/models/unsloth/.../48GB/Q8_K_XL.gguf [ctx=262144].
+## Verified (REAL, no mocks/skips)
+- 5 acceptance tests pass (live HF + real hf download + idempotent + same-size corruption restore).
+- 20 worktree unit tests + 103 main unit tests pass; lint green; openspec validate valid.
+- Authentic host/GPU proof: 31.46GB Q8_K_XL downloaded (byte-for-byte), served, /health ok, "hi"
+  replied, wired RAM 2.8->37GB with headroom remaining.
+- PR #50: 14/14 CI checks pass (7 jobs x 2 runs incl. top-tier + cpu-health), OPEN, MERGEABLE.
 
-Also verified: dynamic CPU-only (simulate 16GB -> downshifts to ~12.5GB Q3_K_M);
-30 hermetic unit tests pass; lint green; openspec validate passes; README+wiki synced.
-
-## Commander-bug fixed mid-test
-`_main_download_top_tier` used bare `Path` but aliased `pathlib.Path as _P` -> NameError on
-serve-after-download. Fixed to use `_P` (commit ba3ea88). This surfaced ONLY because the real
-end-to-end serve path actually ran.
+## Count / rating
+- `--count N` (default 1): download top N that fit (ranked highest-fidelity then trending).
+- `--min-trending-score N` (default 0): only repos with HF trendingScore >= N (rating floor).
 
 ## Status / next
-Implementation + real host proof DONE. Remaining: tick openspec tasks.md, run full `make loop`
-(container) + openspec-tasks-check, open PR referencing #49.
+PR #50 green + aligned. Waiting on reviewer approval to merge (AGENTS.md gate). Issue #49
+condensed to 3.9KB concise spec (goal, acceptance criteria, manual-run + Makefile/CI commands,
+files).
