@@ -37,6 +37,11 @@
       `~/{MODELS_ROOT}/<owner>/<family>/<TierGB>/`, complete size (== HF bytes, no
       `.incomplete`/`.part`), `.progress.log` present, `llama-ai --list` sees it,
       idempotent re-run, and different size-fits land in different tier folders.
+- [x] 9e. Refresh / content-update acceptance (A9): `hf_download.py` accepts `refresh=1`;
+      `download_top_tier_candidate` always refreshes so a same-name SAME-SIZE upstream
+      content change (or local corruption) is re-fetched by etag/content-hash, not masked
+      by a size-only guard. Covered by `test_tiny_model_download_retest_and_update_recovery`
+      (real 0.5B download -> idempotent re-run -> corrupt in place -> refresh restores bytes).
 - [x] 9c. Real top-tier download + dynamic host/CI verification (A6+A8): genuinely
       downloads the picked top-tier model via real `hf` (idempotent), dynamic RAM read
       before/after, loads on Metal if GPU enabled (AGENTS.md) or CPU in container on a

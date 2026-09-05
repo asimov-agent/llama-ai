@@ -72,6 +72,25 @@ fallback downloader), set `HF_HUB_ENABLE_HF_TRANSFER=1` + `HF_HUB_DISABLE_XET=1`
 #### Scenario: `hf` is absent; the command fails fast with an actionable error instead
 of invoking a second downloader.
 
+### Requirement: A9 — Refresh detects same-name content updates (etag/content-hash aware)
+WHEN a model is already downloaded and `--download-top-tier` runs again, THEN the download
+path uses **REFRESH mode** (`hf_download.py` with `refresh=1`), which always consults the
+Hub and decides freshness by the file's **etag = content hash**, not by filename or size:
+- if the local file's content still matches the Hub -> `hf` no-ops fast, no re-download;
+- if the file was **UPDATED upstream** — same filename, even same size, new bytes — the
+  etag differs and `hf` re-fetches just that file;
+- a corrupt / fragmented local file (same name) is likewise detected and re-fetched.
+
+The top-tier path must NOT skip on mere existence or size alone, because that would mask a
+same-name content update. Resume of a partial download is unchanged (`hf` resumes by byte
+offset from the recorded etag).
+
+#### Scenario: `Qwen3.8-27B-UD-Q8_K_XL.gguf` is present; upstream re-uploads the same filename
+with new weights (same size). A re-run re-fetches the changed file; serving uses the new bytes.
+
+#### Scenario: A locally corrupted file (same name + size) is re-downloaded and restored to
+the correct content on the next `--download-top-tier` run.
+
 ### Requirement: A4 — Provider-aware tier-folder placement + immediate serveability
 WHEN a model is downloaded via `--download-top-tier`, THEN it lands in
 `~/{MODELS_ROOT}/<owner>/<model-family>/<TierGB>/` where `<owner>` is the HF repo owner
