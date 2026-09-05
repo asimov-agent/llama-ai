@@ -1,11 +1,13 @@
 """Acceptance tests for the top-tier trending download feature (issue #49).
 
-REAL end-to-end tests — NO mocks, NO skips. They hit the live Hugging Face API,
-the real `hf` downloader, and the real GPU/CPU card memory read. No test here may
-be skipped; if `hf` is genuinely absent we hard-fail (it is installed by default
-on the host and in the CI image). The dynamic memory read works on both macOS
-(Metal) and Linux/CI (CPU), so the fit gate picks the top-tier quant that fits
-whichever card the test runs on.
+Each test is written as a short story a non-technical reader can follow, while
+still running the REAL system — live Hugging Face, the real `hf` downloader, and
+the real CPU/GPU card memory. NO mocks, NO skips. If `hf` is genuinely missing we
+hard-fail (it is installed on the host and in the CI image).
+
+Story style:  Given <starting situation>
+              When  <an action happens>
+              Then  <what must be true>
 """
 from __future__ import annotations
 
@@ -24,7 +26,7 @@ pytestmark = pytest.mark.acceptance
 
 
 def _real_hf() -> str:
-    """Return the real hf binary; FAIL (not skip) if it is genuinely absent."""
+    """Locate the real `hf` command. Fails (does not skip) if it is missing."""
     hf = os.environ.get("HF_BIN") or shutil.which("hf")
     assert hf and Path(hf).is_file(), (
         "hf CLI not installed — cannot run real top-tier acceptance tests. "
@@ -33,38 +35,64 @@ def _real_hf() -> str:
 
 
 def test_real_trending_query_and_dynamic_ram():
-    """Live HF trending + dynamic card read return sane results on host OR CPU."""
+    """Story: we ask what's trending and how much memory the machine has.
+
+    Given  I ask the tool to look up what GGUF models are trending right now
+           and I ask it how much memory this computer has,
+    When   it reads the machine and asks Hugging Face,
+    Then   it must find at least one trending model,
+           and the machine must report a sensible amount of memory (more than 1 GB)
+           with a positive amount of spare room.
+    """
     total = llama_ai.read_total_ram_bytes()
     assert total > 1024 ** 3, "total RAM must be > 1 GB"
     headroom = llama_ai.read_current_headroom_bytes(total)
     assert headroom > 0, "headroom must be positive"
+
     repos = llama_ai._trending_gguf_repos(limit=25)
     assert isinstance(repos, list)
-    assert len(repos) > 0, "expected top-tier trending GGUF repos from the live HF API"
+    assert len(repos) > 0, "expected at least one trending GGUF model on Hugging Face"
     for r in repos:
         assert "repo" in r, "each trending entry has a repo id"
-        assert r["repo"].count("/") == 1, "repo id must be owner/name"
+        assert r["repo"].count("/") == 1, "repo id must be owner/name (e.g. unsloth/Qwen3.8-27B-GGUF)"
 
 
 def test_discover_top_tier_fit_gate():
-    """discover_top_tier must ONLY return candidates that FIT the actual card."""
+    """Story: only models that FIT this card are offered.
+
+    Given  I ask for the top trendy models that will fit this exact computer,
+    When   the tool checks each candidate against this machine's memory,
+    Then   every model offered must fit with room to spare —
+           (model size + spare room + a little extra for KV cache) is never more
+           than the machine's total memory,
+           each model goes into a folder that records who made it
+           (owner or company name first), and
+           no toy-sized tiny model is offered as "top tier".
+    """
     total = llama_ai.read_total_ram_bytes()
     head = llama_ai.read_current_headroom_bytes(total)
     cands = llama_ai.discover_top_tier(limit=4, total_ram_bytes=total, headroom_bytes=head)
-    assert cands, "expected at least one top-tier candidate to fit the actual card"
+    assert cands, "expected at least one top-tier model to fit this machine"
     for c in cands:
-        # fit gate: size + headroom + KV reserve must be <= total
+        # fit: size + headroom + KV reserve <= total
         assert c["size_bytes"] + head + (1024 ** 3) <= total, \
-            f"candidate {c['repo']}::{c['filename']} does NOT fit the card"
-        # provider-aware path: <root>/<owner>/<family>/<TierGB>/<file>
+            f"{c['repo']}::{c['filename']} does NOT fit this machine's memory"
+        # owner/family first in the destination path
         owner, family = c["repo"].split("/", 1)
         assert c["dest_path"].startswith(str(Path(llama_ai.MODELS_ROOT) / owner / family))
         assert c["filename"] == Path(c["dest_path"]).name
-        assert c["size_gb"] >= llama_ai.MIN_TOP_TIER_GB, "top-tier must not be a toy"
+        assert c["size_gb"] >= llama_ai.MIN_TOP_TIER_GB, "a toy model is not 'top tier'"
 
 
 def test_provider_placement_specific():
-    """provider_dest_path must produce <root>/<owner>/<family>/<TierGB>/<file>."""
+    """Story: files are saved into a folder that shows by whom and how it fits.
+
+    Given  a model made by "unsloth" named Qwen3.8-27B,
+    When   the tool decides where to save a 29 GB copy of it,
+    Then   the save location must be .../unsloth/Qwen3.8-27B-GGUF/48GB/...
+           (owner/unsloth, tunneled by size tier: a 15 GB copy -> 16GB,
+            a 22 GB copy -> 24GB, a 29 GB copy -> 48GB).
+    """
     repo = "unsloth/Qwen3.8-27B-GGUF"
     fn = "Qwen3.8-27B-Q8_0.gguf"
     root = "/tmp/llama-models-test"
@@ -76,47 +104,51 @@ def test_provider_placement_specific():
     assert p3.endswith("/24GB/Qwen3.8-27B-Q8_0.gguf")
 
 
-def test_real_download_idempotent():
-    """Actually download the #1 top-tier pick (or resign/stay if already complete)
-    via the real hf CLI, then verify completeness + provider placement + idempotency.
+def test_real_download_then_repeat_is_fast_and_safe():
+    """Story: download a real top model, then run again without clobbering.
 
-    This performs a REAL download into the card-aware tier folder. It is NOT a skip:
-    if the matching quant is already fully present (same expected size), the resume/
-    idempotency path is exercised and asserted; otherwise a genuine download runs.
+    Given  I ask for the best trendy top-tier model that fits this machine,
+    When   the tool downloads it for real into a by-owner/by-size folder,
+    Then   the file must actually exist on disk, be a complete download (not a
+           partial stub), and be in exactly the place we expected,
+    When   I ask for the same model a second time,
+    Then   it must not error and must end up at the same place (idempotent).
     """
     _real_hf()
     total = llama_ai.read_total_ram_bytes()
     head = llama_ai.read_current_headroom_bytes(total)
     cands = llama_ai.discover_top_tier(limit=1, total_ram_bytes=total, headroom_bytes=head)
-    assert cands, "expected a top-tier candidate to fit the actual card"
-    cand = cands[0]
-    final = llama_ai.download_top_tier_candidate(cand, models_root=None)
-    # real complete file at the provider-aware path (size == expected)
+    assert cands, "expected a top-tier model to fit this machine"
+
+    final = llama_ai.download_top_tier_candidate(cands[0], models_root=None)
     assert Path(final).is_file(), f"downloaded file missing: {final}"
     size = Path(final).stat().st_size
-    assert size >= cand["size_bytes"] - (64 * 1024 * 1024), \
-        f"file incomplete: {size/1e9:.2f} GB vs expected {cand['size_bytes']/1e9:.2f} GB"
-    assert str(Path(final)) == cand["dest_path"], "file must land at provider-aware dest_path"
-    # idempotent (already complete -> no re-download error, same path)
-    final2 = llama_ai.download_top_tier_candidate(cand, models_root=None)
-    assert final2 == final, "second download must be idempotent (same path)"
+    assert size >= cands[0]["size_bytes"] - (64 * 1024 * 1024), \
+        f"file incomplete: {size/1e9:.2f} GB vs expected {cands[0]['size_bytes']/1e9:.2f} GB"
+    assert str(Path(final)) == cands[0]["dest_path"], "file must land in the by-owner/by-size folder"
+
+    final2 = llama_ai.download_top_tier_candidate(cands[0], models_root=None)
+    assert final2 == final, "second run must end up at the same file (no error, no clobber)"
 
 
-def test_tiny_model_download_retest_and_update_recovery():
-    """Download a TINY real model, re-run idempotently, then simulate a same-name
-    content update and verify REFRESH mode re-fetches the CORRECT bytes.
+def test_same_name_updated_model_is_redownloaded():
+    """Story: a model that was changed 'behind its name' is picked up again.
 
-    Models the exact upstream scenario: same filename, same size, new content.
-    A size-only guard would silently keep the stale copy; this proves the
-    etag/content-hash path re-downloads the changed file. No mocks — real `hf`.
+    Given  a small real model has been downloaded,
+    When   I run the download again, it should just say "already there" (idempotent),
+    But    then I damage that same file on disk — same file name, same byte size,
+           but the contents are now wrong (as if the maker tweaked it in place),
+    When   I ask the tool to get the model again,
+    Then   it must notice the contents no longer match and download the file
+           again, restoring the correct, correct content — it must NOT keep using
+           the damaged copy just because the name and size look the same.
     """
     _real_hf()
     TF = "2026-09-05-qwen05b-tinytest"
     repo = "Qwen/Qwen2.5-0.5B-Instruct-GGUF"
     fn = "qwen2.5-0.5b-instruct-q4_0.gguf"
-    # real size from the HF tree API
-    tree = llama_ai._repo_gguf_files(repo)
-    real = next(f for f in tree if f["path"] == fn)
+    # Ask Hugging Face for this file's real size.
+    real = next(f for f in llama_ai._repo_gguf_files(repo) if f["path"] == fn)
     cand = {
         "repo": repo,
         "filename": fn,
@@ -127,24 +159,27 @@ def test_tiny_model_download_retest_and_update_recovery():
     }
     Path(f"/tmp/{TF}").mkdir(parents=True, exist_ok=True)
     try:
-        # 1. first real download
+        # 1. real download
         final = llama_ai.download_top_tier_candidate(cand, models_root=f"/tmp/{TF}")
         assert os.path.isfile(final)
-        assert os.path.getsize(final) >= cand["size_bytes"] - (64 * 1024 * 1024)
         good_bytes = open(final, "rb").read()
-        # 2. idempotent re-run -> same path, no error
+
+        # 2. idempotent re-run: same place, no error
         final2 = llama_ai.download_top_tier_candidate(cand, models_root=f"/tmp/{TF}")
         assert final2 == final
-        # 3. simulate SAME-NAME SAME-SIZE content update: overwrite with same-length rot13 garbage
-        corrupt = bytes((b ^ 0x5A) & 0xFF for b in good_bytes)
+
+        # 3. damage the file "in place": same name, same size, scrambled contents
+        corrupted = bytes((b ^ 0x5A) & 0xFF for b in good_bytes)
         with open(final, "wb") as f:
-            f.write(corrupt)
-        assert os.path.getsize(final) == cand["size_bytes"]  # size unchanged
-        assert open(final, "rb").read() != good_bytes        # content IS different now
-        # 4. REFRESH mode must re-fetch the CORRECT bytes (etag differs, size same)
+            f.write(corrupted)
+        assert os.path.getsize(final) == cand["size_bytes"]  # size looks identical
+        assert open(final, "rb").read() != good_bytes        # ...but it is wrong
+
+        # 4. asking again must restore the correct contents
         recovered = llama_ai.download_top_tier_candidate(cand, models_root=f"/tmp/{TF}")
         assert recovered == final
         assert open(final, "rb").read() == good_bytes, \
-            "refresh mode must re-download the correct bytes after a same-size content update"
+            ("the downloader must re-fetch and restore the real file after a "
+             "same-size, same-name content change (it must not trust name+size alone)")
     finally:
         shutil.rmtree(f"/tmp/{TF}", ignore_errors=True)
