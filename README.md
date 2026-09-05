@@ -119,7 +119,9 @@ The launcher will:
 - Write the exact command to `<model-dir>/.run.log` for audit/replay.
 
 You can customize `TOTAL_RAM_BYTES`, `OS_OVERHEAD`, `KV_QUANT`, and `SAMPLING` at the top
-of `scripts/llama_serve.py`.
+of `scripts/llama_serve.py`. For `--download-top-tier`, the fit is **dynamic**: the total
+comes from the actual card (`LLAMA_RAM_BYTES` overrides it), headroom is capped at 45% of
+total, and KV reserve applies automatically.
 
 ### Test the endpoint
 
@@ -128,6 +130,47 @@ curl http://127.0.0.1:11434/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{"model":"llm-local","messages":[{"role":"user","content":"hi"}]}'
 ```
+
+## Download the top-tier trending models that fit your GPU (`--download-top-tier`)
+
+Discover and download the **currently-trending, top-tier** GGUF models (from the Hugging
+Face community that publishes GGUF for llama.cpp) that **fit the CPU/GPU card you actually
+have** — with KV-cache headroom so they *run*, not just download.
+
+```bash
+# list the top-tier trending models that fit the actual card (no download)
+llama-ai --download-top-tier --list
+# download the highest-quality top-tier model that fits, then serve it
+llama-ai --download-top-tier
+# download the top N that fit, then serve the best
+llama-ai --download-top-tier --count 3
+# see what it would do without downloading/serving
+llama-ai --download-top-tier --dry
+```
+
+How it decides "trending + top tier + fits":
+
+- **Trending** — a time-weighted Hugging Face popularity signal (`trendingScore`,
+  `filter=gguf`), so you get what's hot *now*, not a lifetime download count.
+- **Top tier** — only flagship/large popular families (Qwen3, DeepSeek, Mistral, Llama,
+  Gemma, gpt-oss, Phi, QwQ, GLM, ...), and only non-trivial quant files (no sub‑1B toy
+  quants, no multi-file shards, no vision projectors).
+- **Fits with buffer** — the total memory comes from the **actual card** at runtime
+  (`sysctl hw.memsize` on macOS, `/proc/meminfo` on Linux, or `LLAMA_RAM_BYTES`), with
+  current-pressure headroom (`vm_stat`). Only models that leave a KV-cache reserve are
+  offered — on a 48 GB card that's ~29 GB Q8-class 27B models; on a 16 GB CPU card it
+  downshifts to ~12 GB Q3-class.
+
+Downloads go into a **provider-aware** folder so you always know who made the model:
+
+```
+~/models/<owner>/<family>/<TierGB>/<file>.gguf
+~/models/unsloth/Qwen3.8-27B/48GB/Qwen3.8-27B-UD-Q8_K_XL.gguf
+```
+
+Re-runs are **idempotent**: the real `hf` (huggingface_hub) CLI content-addresses its cache
+by etag, and the launcher skips entirely when the target file is already complete — so you
+never re-download the whole model.
 
 ---
 
@@ -263,7 +306,7 @@ llama-ai/
 │   └── Dockerfile
 ├── docker-compose-files/test.yaml   # hermetic test container (documented)
 ├── scripts/
-│   ├── llama_serve.py    # GGUF launcher + llama-server auto-tuner
+│   ├── llama_serve.py    # GGUF launcher + llama-server auto-tuner + --download-top-tier
 │   ├── hf_download.py    # HF downloader (auto-resume/retry, throttled)
 │   ├── __init__.py       # package marker for hermetic unit tests
 │   ├── loop_harness.py       # `make loop` orchestrator (9 stages)
@@ -271,6 +314,7 @@ llama-ai/
 │   └── lint_linefeeds.py     # linefeed/editorconfig lint (--fix)
 ├── tests/
 │   ├── test_llama_ai.py      # hermetic unit tests (imports scripts.llama_serve)
+│   ├── test_top_tier_acceptance.py # REAL (no-mock) top-tier download acceptance
 │   ├── test_install.py       # host-install tests (skip cleanly in container)
 │   └── test_health.py        # e2e CPU LLM health check (downloads + "hi")
 ├── .github/workflows/ci.yml  # parallel per-stage CI (all branches/PRs)
