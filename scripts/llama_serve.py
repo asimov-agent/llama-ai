@@ -723,7 +723,7 @@ def _main_download_top_tier(args):
     # pick the same file we downloaded (by exact path).
     from pathlib import Path as _P
     chosen = next((m for m in models
-                   if Path(m["file"]).resolve() == _P(cands[0]["dest_path"]).resolve()), None)
+                   if _P(m["file"]).resolve() == _P(cands[0]["dest_path"]).resolve()), None)
     if chosen is None:
         # fall back to largest local model (should still be the just-downloaded one)
         chosen = models[0]
