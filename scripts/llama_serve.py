@@ -897,17 +897,33 @@ def _main_download_top_tier(args):
         print("[top-tier] nothing could be downloaded.")
         sys.exit(1)
     print(f"\n[top-tier] completed {len(completed)}/{len(cands)} provider(s).")
-    if skip_summary:
-        by_reason = {}
-        for _, reason in skip_summary:
-            by_reason[reason] = by_reason.get(reason, 0) + 1
-        parts = ", ".join(f"{n} {r}" for r, n in sorted(by_reason.items()))
-        print(f"[top-tier]   (+{len(skip_summary)} skipped pre-flight: {parts}).")
+    skip_line = _skip_summary_line(skip_summary)
+    if skip_line:
+        print(f"[top-tier]   (+{skip_line}).")
     print("[top-tier] downloaded models are available to serve. Use the normal "
           "launch path (e.g. `llama-ai <model-name>`) to start llama-server — "
           "`--download-top-tier` only downloads; it never auto-starts the server.")
     for i, c in enumerate(completed, 1):
         print(f"  {i}. {c['repo']}::{c['filename']}  -> {c['dest_path']}")
+
+
+def _skip_summary_line(skip_summary):
+    """Format the pre-flight skip summary (per reason) or '' if empty.
+
+    skip_summary is a list of (repo, filename, reason) tuples. Returns the
+    'N skipped pre-flight: <reason-counts>' suffix (without the parens or trailing
+    period), or '' when there are no skips. Does NOT crash on the real 3-tuple
+    shape (regression: issue #56 — previously unpacked 2-tuples and raised
+    'ValueError: not enough values to unpack (expected 2)' whenever a repo was
+    pre-flight skipped).
+    """
+    if not skip_summary:
+        return ""
+    by_reason = {}
+    for _repo, _filename, reason in skip_summary:
+        by_reason[reason] = by_reason.get(reason, 0) + 1
+    parts = ", ".join(f"{n} {r}" for r, n in sorted(by_reason.items()))
+    return f"{len(skip_summary)} skipped pre-flight: {parts}"
 
 
 def _serve_chosen(chosen, args):
