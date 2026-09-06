@@ -10,3 +10,7 @@
 - [x] 3. Verify: `make lint`, `make test-unit`, `make test-top-tier`; `make openspec-validate
       NAME=fix-top-tier-skip-summary-crash`; commit + push each batch; open PR against `main`
       referencing issue #56.
+- [x] 4. Rewrite the spec scenarios in strict **Given / When / Then / And** block format
+      (separate lines per step, not inline) per AGENTS.md.
+- [x] 5. Add the durable AGENTS.md rule: every spec scenario MUST have Given / When / Then,
+      and every scenario implies a matching test wired into the Makefile/CI gate.

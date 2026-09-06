@@ -453,6 +453,26 @@ Mechanics of the guarantee:
   meaningful behavior that CAN run (e.g. the error message / CLI contract), never
   `pytest.skip("needs X")`.
 
+### EVERY spec scenario must have Given / When / Then (mandatory, durable)
+
+Every spec-driven change (`openspec/changes/<name>/specs/**/spec.md`) must express each
+behaviour as a strict behavior-block in the **Given / When / Then** style — the OpenSpec
+scenario is the contract the tests are written against, so it must read like an example:
+- Each **Requirement** carries a top-level `WHEN … / THEN …` block defining the behaviour.
+- Each `#### Scenario:` has **separate lines** for `Given`, `When`, `Then` (and `And` where
+  steps accumulate) — NOT one big inline sentence. Example:
+  ```markdown
+  #### Scenario: gated repo is skipped
+  Given a repo that requires approval is trending,
+  When   we pre-flight its file,
+  Then   it is skipped as `access-denied` and never triple-retried.
+  ```
+- Every `Scenario` that implies a test MUST have matching pytest/acceptance test(s) in the
+  repo (no scenario without a test, no test without a scenario), and those tests must be
+  wired into the Makefile/CI gate. A validator that confirms the spec is valid (`make
+  openspec-validate`) is required before a "done" claim, and the strict G/W/T block format
+  should be used so the scenario is unambiguous.
+
 ### README must always be kept in sync
 
 Any change that adds, renames, or alters a user-facing feature, `make` command,
