@@ -205,8 +205,9 @@ started directly.
 make loop              # == make loop-harness: run ALL stages in order, GREEN gate
 make test-image        # build the test image (python+pytest+deps + CPU llama-server)
 make lint              # linefeed/editorconfig lint (fail-closed)
-make test-unit         # hermetic unit tests
-make test-install      # install tests (run in-container; host-artifact asserts skip)
+make test-unit         # hermetic unit tests (all files, incl. openspec-tasks-check)
+make test-install      # install tests (run in-container; host-artifact asserts — no skips via test-install-ci)
+make test-install-ci   # REAL install tests, NO SKIPS: make install + model + assert in ONE container
 make test-install-host # verify the REAL host install: ~/bin/llama-ai + symlinks + ~/models (runs on host)
 make test-health       # end-to-end CPU LLM check: downloads tiny model, answers "hi"
 make test-top-tier     # REAL acceptance (no mocks): live HF trending + fit gate + real download
@@ -338,7 +339,8 @@ llama-ai/
 ├── tests/
 │   ├── test_llama_ai.py      # hermetic unit tests (imports scripts.llama_serve)
 │   ├── test_top_tier_acceptance.py # REAL (no-mock) top-tier download acceptance
-│   ├── test_install.py       # host-install tests (skip cleanly in container)
+│   ├── test_install.py       # host-install tests (NO SKIPS — fail loudly if artifacts missing)
+│   ├── test_check_openspec_tasks.py # validates openspec task checkboxes (in CI unit job)
 │   └── test_health.py        # e2e CPU LLM health check (downloads + "hi")
 ├── .github/workflows/ci.yml  # parallel per-stage CI (all branches/PRs)
 ├── openspec/            # OpenSpec change tracking (spec-driven)

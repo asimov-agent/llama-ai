@@ -47,16 +47,18 @@ jobs:
         run: make test-clean
 
   # ------------------------------------------------------------------
-  # install: host install tests (make test-install) — skips cleanly in container
-  # ------------------------------------------------------------------
+  # install: REAL host-install tests (make test-install-ci) — performs a real
+  # `make install` + seeds a model + asserts the artifacts, all in ONE container.
+  # NO SKIPS: a missing prerequisite fails the job loudly, it never silently skips.
   install:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - name: Build test image
         run: make test-image
-      - name: make test-install
-        run: make test-install
+      - name: make test-install-ci (real install, no skips)
+        run: make test-install-ci
       - name: Prune orphaned test containers
         run: make test-clean
 

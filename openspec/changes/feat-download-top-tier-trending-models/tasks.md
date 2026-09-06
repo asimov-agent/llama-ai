@@ -105,3 +105,12 @@
       (real, no-mock) GREEN, `make test-top-tier-serve`
       (download -> serve -> "hi" -> RAM) GREEN on host and CI, `/health` + "hi" + remaining-RAM
       proof GREEN on the 48 GB Metal host — feature is done; open the PR referencing #49.
+- [x] 13. **NO-SKIP harness + all python tests in CI** (user: "never skip tests, no fallbacks,
+      CI harness solid"): removed EVERY `pytest.skip`/`skipif` from the suite (the serve test,
+      health test, and all 7 install tests now FAIL LOUDLY on a missing prerequisite instead of
+      silently skipping); added a conftest no-skip guard hook (any skip -> red exit); rewired the
+      CI `install` job to `make test-install-ci` (a REAL `make install` + model seed in ONE
+      container -> 7 install tests genuinely run); folded the orphaned `test_check_openspec_tasks.py`
+      (23 tests) into `make test-unit`; AGENTS.md gained a "NO SKIPPED TESTS" rule. Verified: host
+      137 unit + 7 install pass, container `test-unit` 103 pass (worktree `.git` artifact excluded),
+      `test-install-ci` 7 pass, lint green, openspec valid.

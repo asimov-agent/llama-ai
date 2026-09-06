@@ -32,9 +32,9 @@ LAUNCHER := $(BIN)/llama-ai
 LLAMA_SERVER_BIN ?= $(HOME)/repository/git/llama.cpp/build/bin/llama-server
 
 .PHONY: all install venv-install link uninstall smoke list version help \
-	openspec-image openspec-new openspec-validate openspec-status openspec-shell \
-	test test-unit test-install test-health download-test-model \
-	test-image test-clean lint lint-fix loop loop-harness chained
+		openspec-image openspec-new openspec-validate openspec-status openspec-shell \\
+		test test-unit test-install test-install-ci test-install-host test-health download-test-model \\
+		test-image test-clean lint lint-fix loop loop-harness chained
 
 # ---- container runtime (nerdctl preferred, docker fallback) --------------
 RUNTIME ?= nerdctl
@@ -152,8 +152,8 @@ test-clean: ## Remove left-over/stopped orphaned containers of the test image (i
 	done; \
 	echo "Pruned stopped orphaned $(TEST_IMG) containers."
 
-test-unit: ## Hermetic unit tests (containerized) — includes the lint regression test
-	$(TEST_RUN) python -m pytest tests/test_llama_ai.py tests/test_lint_linefeeds.py tests/test_watchloop_dispatch.py -p no:cacheprovider -q
+test-unit: ## Hermetic unit tests (containerized) — includes the lint regression + openspec-tasks-check tests
+	$(TEST_RUN) python -m pytest tests/test_llama_ai.py tests/test_lint_linefeeds.py tests/test_watchloop_dispatch.py tests/test_check_openspec_tasks.py -p no:cacheprovider -q
 
 test-agents-read: ## Guard: AGENTS.md must not match Hermes context-file threat patterns (fail-closed). Host-side: uses a Python >=3.11 that has hermes-agent installed (3rd-party PyPI dep, pinned ==0.19.0; the CI agents-read job installs it itself). Not containerized, to avoid bumping the 3.10 test image.
 	@echo "==> test-agents-read: scanning AGENTS.md with the installed hermes-agent threat scanner"
@@ -177,6 +177,16 @@ test-install-host: ## Verify the REAL host install (make install) — runs on th
 	# local/AGENTS.md proof that `make install` works.
 	@echo "==> Verifying host install artifacts via tests/test_install.py"
 	@$(PY) -m pytest tests/test_install.py -p no:cacheprovider -q
+
+test-install-ci: ## REAL install tests inside the test container (NO SKIP): make install + seed model + assert artifacts, in ONE container
+	# The install tests assert HOST install artifacts (~/bin/llama-ai, ~/bin/llama_ai.py,
+	# llama-server on PATH, ~/models). They must not skip: so this target performs a REAL
+	# `make install` (launcher + venv + symlinks) INSIDE the container, seeds the
+	# lightweight model so --list/--dry have something, then runs the tests — all in a
+	# SINGLE container session so the artifacts actually persist for pytest. Missing
+	# prerequisites are a loud failure here, never a skip.
+	@echo "==> test-install-ci: real make install + model seed + tests (no skips)"
+	$(TEST_RUN) sh -c 'make install && python scripts/download_test_model.py && python -m pytest tests/test_install.py -p no:cacheprovider -q'
 
 test-top-tier: ## REAL top-tier acceptance (no mocks): live HF trending + fit gate + provider-aware download + placement
 	# Host-side acceptance for --download-top-tier (issue #49): hits the live

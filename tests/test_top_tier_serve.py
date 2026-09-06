@@ -157,8 +157,14 @@ def test_top_tier_serve_loads_and_answers_hi(tmp_path):
     """
     model = _resolve_model_file(str(tmp_path))
     server = _resolve_llama_server()
-    if not server:
-        pytest.skip("llama-server binary not found; cannot run the serve test")
+    # NO-SKIP: if llama-server is absent this is a loud FAILURE, never a silent skip.
+    # (In CI the test image bundles a CPU llama-server; locally it comes from PATH,
+    #  $LLAMA_SERVER, ~/bin/llama-server, or the repo build.)
+    assert server, (
+        "llama-server binary not found (checked $LLAMA_SERVER, PATH, ~/bin/llama-server, "
+        "and the repo llama.cpp build). Cannot run the serve test. Set LLAMA_SERVER or "
+        "build llama.cpp — missing prerequisite is a hard failure, never a skip."
+    )
 
     port = _pick_port()
     url = _base_url(port)
