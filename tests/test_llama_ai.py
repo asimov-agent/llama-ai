@@ -1011,3 +1011,24 @@ def test_probe_downloadable_verifies_real_gguf_chunk(monkeypatch):
     monkeypatch.setattr(llama_ai.urllib.request, "urlopen",
                         make_urlopen(b"<html><body>404 Not Found</body></html>"))
     assert llama_ai._probe_file_downloadable("x/repo", "m.gguf") is None  # 200-but-HTML -> not real
+
+
+def test_skip_summary_line_handles_3tuples_without_crash():
+    """The completion summary must tolerate the REAL skip-list shape (repo, filename,
+    reason) 3-tuples and report skips grouped by reason — regression for issue #56
+    (previously crashed with 'ValueError: not enough values to unpack (expected 2)')."""
+    skip_summary = [
+        ("orcarouter/Qwen3.8-27B-Uncensored-GGUF", "a-Q8_0.gguf", "access-denied"),
+        ("orcarouter/Qwen3.8-27B-Uncensored-GGUF", "a-Q5_K_M.gguf", "access-denied"),
+        ("dead/provider", "b.gguf", "dead"),
+    ]
+    line = llama_ai._skip_summary_line(skip_summary)  # must NOT raise
+    assert "3 skipped pre-flight" in line, line
+    assert "2 access-denied" in line, line
+    assert "1 dead" in line, line
+
+
+def test_skip_summary_line_empty_no_suffix():
+    """When nothing was pre-flight skipped, the summary has no skip suffix."""
+    assert llama_ai._skip_summary_line([]) == ""
+    assert llama_ai._skip_summary_line(None) == ""
