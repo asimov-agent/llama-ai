@@ -19,4 +19,7 @@
       the 2 summary tests.
 - [x] 7. Require (AGENTS.md) + apply: each Python test's CODE BLOCK carries inline
       `# Given / # When / # Then` comment markers at the matching code steps (readable in-place);
-      applied to the 2 summary tests.
+      applied to the 2 summary tests. Sections separated by blank lines.
+- [x] 8. Require (AGENTS.md) + apply: **blank-line spacing** between each `# Given / # When /
+      # Then` marker+code group (and after the docstring) so the sections read as distinct
+      blocks; applied to the 2 summary tests.

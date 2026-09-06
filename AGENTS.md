@@ -475,15 +475,20 @@ scenario is the contract the tests are written against, so it must read like an 
 - **The Python test itself must mirror the scenario:** each acceptance/behavior test's body
   MUST carry `# Given / # When / # Then` **comment markers** at the corresponding code steps so
   the behavior is readable in-place (a test whose body is a bare wall of asserts with no
-  Given/When/Then markers is a defect). Docstring may carry the prose, but the markers go in
-  the code block. Example:
+  Given/When/Then markers is a defect). **Separate each marker+code group from the next with a
+  blank line** (and use a blank line after the docstring), so the Given / When / Then sections
+  read as distinct blocks. Docstring may carry the prose, but the markers go in the code block.
+  Example:
   ```python
   def test_real_probe_ok_on_public_downloadable_repo():
       """A public repo is downloadable over an authenticated 200."""
-      _real_hf()
+
       # Given a public GGUF repo/file on Hugging Face
+      _real_hf()
+
       # When  we pre-flight it with the probe
       result = llama_ai._probe_file_downloadable(...)
+
       # Then  it returns 'ok' (real GGUF chunk over an authenticated 200)
       assert result == "ok"
   ```
