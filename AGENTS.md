@@ -472,19 +472,23 @@ scenario is the contract the tests are written against, so it must read like an 
   wired into the Makefile/CI gate. A validator that confirms the spec is valid (`make
   openspec-validate`) is required before a "done" claim, and the strict G/W/T block format
   should be used so the scenario is unambiguous.
-- **The Python test itself must mirror the scenario:** each acceptance/behavior test's docstring
-  MUST carry the same `Given / When / Then` (and `And`) lines as the spec scenario it
-  implements — a test with a plain prose docstring (or none) that implements a behavior
-  scenario is a defect. Example:
+- **The Python test itself must mirror the scenario:** each acceptance/behavior test's body
+  MUST carry `# Given / # When / # Then` **comment markers** at the corresponding code steps so
+  the behavior is readable in-place (a test whose body is a bare wall of asserts with no
+  Given/When/Then markers is a defect). Docstring may carry the prose, but the markers go in
+  the code block. Example:
   ```python
   def test_real_probe_ok_on_public_downloadable_repo():
-      """Given a public GGUF repo/file on Hugging Face,
-      When   we pre-flight it with the probe,
-      Then   it returns 'ok' (real GGUF chunk over an authenticated 200)."""
-      ...
+      """A public repo is downloadable over an authenticated 200."""
+      _real_hf()
+      # Given a public GGUF repo/file on Hugging Face
+      # When  we pre-flight it with the probe
+      result = llama_ai._probe_file_downloadable(...)
+      # Then  it returns 'ok' (real GGUF chunk over an authenticated 200)
+      assert result == "ok"
   ```
-  This keeps the spec scenario and the test in lock-step: a reviewer can read the test's
-  docstring and immediately confirm it maps to a `#### Scenario` with the same Given/When/Then.
+  This keeps the spec scenario and the test in lock-step: a reviewer reads the `# Given/# When/
+  # Then` markers in the test body and confirms each maps to the spec's `#### Scenario`.
 
 ### README must always be kept in sync
 

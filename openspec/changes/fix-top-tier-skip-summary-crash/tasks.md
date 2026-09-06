@@ -17,3 +17,6 @@
 - [x] 6. Require (AGENTS.md) + apply: each Python acceptance/behavior test's docstring mirrors
       its spec scenario with the same `Given / When / Then` lines; added G/W/T docstrings to
       the 2 summary tests.
+- [x] 7. Require (AGENTS.md) + apply: each Python test's CODE BLOCK carries inline
+      `# Given / # When / # Then` comment markers at the matching code steps (readable in-place);
+      applied to the 2 summary tests.
