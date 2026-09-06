@@ -758,3 +758,85 @@ def test_discover_top_tier_offers_and_places_large_model_on_big_card(monkeypatch
     # 400 GB -> 512GB/ ; 200 GB -> 256GB/ (next available bucket >= 200)
     assert result[0]["size_gb"] == 400.0 and result[0]["tier_folder"] == "512GB"
     assert result[1]["size_gb"] == 200.0 and result[1]["tier_folder"] == "256GB"
+
+
+# ---------------------------------------------------------------------------
+# FULL VRAM-parameterized placement: assume a specific GPU VRAM and verify each
+# mocked model lands in the folder for the card it FITS (issue #51).
+# For every card size in the ladder and a sweep of model sizes, the model's
+# dest_path/<TierGB> must equal the smallest available bucket >= its size.
+# ---------------------------------------------------------------------------
+def _expected_tier(model_gb, card_gb):
+    """Reference impl: smallest TIER_LADDER_GB entry <= card_gb (available buckets),
+    and within those the smallest bucket >= model_gb, else the largest."""
+    avail = [b for b in llama_ai.TIER_LADDER_GB if b <= card_gb]
+    assert avail, "card too small for any bucket"
+    for b in avail:
+        if model_gb <= b:
+            return f"{b}GB"
+    return f"{avail[-1]}GB"
+
+
+def test_placement_parametrized_over_all_card_sizes():
+    """Every ladder card size x a model sweep -> correct TierGB folder (full dest_path)."""
+    ALL_LADDER = llama_ai.TIER_LADDER_GB
+    # one representative model per tier (fits comfortably on cards >= that tier)
+    model_sizes_gb = [5, 12, 20, 29, 60, 100, 200, 400, 500, 1000]
+    for card_gb in ALL_LADDER:
+        total = int(card_gb * (1024 ** 3))
+        for mgb in model_sizes_gb:
+            want = _expected_tier(mgb, card_gb)
+            got = llama_ai.pick_tier_folder(int(mgb * 1024 ** 3), total)
+            assert got == want, (
+                f"{mgb} GB model on {card_gb} GB card: expected {want}, got {got}")
+
+            # also verify the full placement path embeds the same tier
+            p = llama_ai.provider_dest_path("unsloth/X-GGUF", "x.gguf",
+                                            int(mgb * 1024 ** 3), models_root="/m",
+                                            total_ram_bytes=total)
+            assert f"/{want}/x.gguf" in p, (
+                f"{mgb} GB model on {card_gb} GB card dest_path {p} missing tier {want}")
+
+
+def test_placement_fit_gate_and_folder_agree(monkeypatch):
+    """The fit gate (eligibility) and the tier folder (placement) must agree on the
+    same assumed VRAM: a model with size+headroom+KV <= card IS offered AND its
+    folder says it fits; a model that can't fit is NOT offered at all."""
+    card_gb = 512
+    total = int(card_gb * 1024 ** 3)
+    head = 4 * 1024 ** 3
+    kv = 1024 ** 3
+
+    repo = "unsloth/Big-GGUF"
+    sizes = [40, 400]  # 40 GB fits any card; 400 GB only fits >=512
+
+    def fake_trending(limit=25):
+        return [{"repo": repo, "downloads": 1, "likes": 1, "trendingScore": 900}]
+
+    def fake_files(r):
+        return [{"path": f"m{s}.gguf", "size_bytes": int(s * 1024 ** 3), "size_gb": s}
+                for s in sizes]
+
+    monkeypatch.setattr(llama_ai, "_trending_gguf_repos", fake_trending)
+    monkeypatch.setattr(llama_ai, "_repo_gguf_files", fake_files)
+    monkeypatch.setattr(llama_ai, "MIN_TOP_TIER_GB", 1.0)
+
+    # headroom_bytes is passed separately; the gate uses size+head+kv <= total
+    result = llama_ai.discover_top_tier(limit=10, total_ram_bytes=total,
+                                        headroom_bytes=head, min_trending_score=0,
+                                        per_provider=5)
+    placed = {c["size_gb"]: c["tier_folder"] for c in result}
+    # 40 GB fits 512 GB card comfortably -> offered, tier 48GB (smallest >= 40)
+    # 400 GB fits 512 GB card (400+4+1=405 <=512) -> offered, tier 512GB
+    assert set(placed) == {40, 400}, f"expected both to be offered, got {placed}"
+    assert placed[40] == "48GB" and placed[400] == "512GB"
+
+    # Now the SAME model on a 48 GB card: 400 GB does NOT fit -> not offered; 40 fits.
+    total48 = 48 * 1024 ** 3
+    result48 = llama_ai.discover_top_tier(limit=10, total_ram_bytes=total48,
+                                          headroom_bytes=head, min_trending_score=0,
+                                          per_provider=2)
+    placed48 = {c["size_gb"]: c["tier_folder"] for c in result48}
+    assert 40 in placed48 and 400 not in placed48, (
+        f"on 48 GB card only 40 GB offered, got {placed48}")
+    assert placed48[40] == "48GB"

@@ -64,9 +64,16 @@ gate), not an unbounded per-model "smallest card anywhere".
 ## Verification
 
 - Unit tests drive `pick_tier_folder(size, total_ram)` across small + mid + very large
-  sizes and at least two card sizes (48 GB and 512 GB).
+  sizes and **every** `TIER_LADDER_GB` card size (full VRAM-parameterized sweep via mocked
+  VRAM) — each mocked model lands in the folder for the card it fits; the full
+  `provider_dest_path` `dest_path` is asserted too.
+- A **fit-gate ⇄ placement agreement** test proves, on the same assumed VRAM, a model that
+  fits IS offered + correctly tiered and one that can't fit is NOT offered.
 - Acceptance: on a 512 GB sim (`LLAMA_RAM_BYTES`), a large model lands in a non-`48GB`
   tier and is still offered; `--list`/`scan_models()`/serve still find it.
+- **CI**: `make test-unit` (includes the placement sweep in `tests/test_llama_ai.py`) and
+  `make test-top-tier-ci` (acceptance) both run in the pipeline — no skips, explicit
+  `total_ram_bytes` so runner RAM never skips them.
 - `make lint`, `make test-unit`, `make test-top-tier` GREEN.
 - Issue number 51; this is a spec-tracked OpenSpec change with `proposal.md` +
   `specs/.../spec.md` + `tasks.md`, all committed and pushed to the feature branch.
