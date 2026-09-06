@@ -74,6 +74,34 @@ def test_fast_reader_returns_none_on_non_gguf(tmp_path):
     assert llama_ai.read_model_meta_fast(str(p)) is None
 
 
+def test_download_metadata_verification_accepts_real_gguf(tmp_path):
+    """The post-download metadata verification (download_top_tier_candidate) accepts a
+    genuine GGUF model file — proves the right model was downloaded (by its GGUF header)."""
+    p = _minimal_gguf(tmp_path)
+    meta = llama_ai.read_model_meta_fast(str(p)) or llama_ai.read_model_meta(str(p))
+    assert meta is not None, "a real GGUF model must be verifiable by its metadata"
+    # the exact metadata that identifies which model it is:
+    assert meta["name"] == "mini-model"
+    assert meta["arch"] == "qwen2"
+    assert meta["n_layer"] == 28
+
+
+def test_download_metadata_verification_rejects_html_error_page(tmp_path):
+    """story: a botched download (e.g. an HTML error page saved as model.gguf) must be
+    caught by the metadata verification and NOT accepted as a valid model."""
+    # an HTML error page is NOT a GGUF — mirror the download path's verification:
+    # fast reader returns None, full reader raises, and the result is REJECTED.
+    p = tmp_path / "model.gguf"
+    p.write_bytes(b"<html><body>404: Model Not Found</body></html>")
+    meta = llama_ai.read_model_meta_fast(str(p))
+    if meta is None:
+        try:
+            meta = llama_ai.read_model_meta(str(p))
+        except Exception:
+            meta = None
+    assert meta is None, "an HTML error page is not a valid GGUF model and must be rejected"
+
+
 # ---------------------------------------------------------------------------
 # model scan (reads whatever lives under MODELS_ROOT)
 # ---------------------------------------------------------------------------

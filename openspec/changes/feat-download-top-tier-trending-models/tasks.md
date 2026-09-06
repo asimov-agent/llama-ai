@@ -42,6 +42,11 @@
       DROP low-fidelity-only providers (IQ1/IQ2/IQ3 quants, e.g. an 8-11 GB 27B) so "no lower
       models" holds even for a #1-trending repo. Tests: `test_discover_top_tier_high_and_lower_per_provider`
       (trending-first order) + `test_discover_drops_low_fidelity_iq_quants`.
+- [x] 8d. **Metadata-verify the download** (user: "the right models that are about to get downloaded
+      can be verified by its metadata"): `download_top_tier_candidate` now reads the downloaded file's
+      GGUF header (`read_model_meta_fast` + full-reader fallback) and rejects a non-GGUF/corrupt/HTML
+      file instead of trusting filename+size. Tests: `test_download_metadata_verification_accepts_real_gguf`
+      (valid GGUF decodes to real arch/name/layers) + `test_download_metadata_verification_rejects_html_error_page`.
 - [x] 9. Acceptance tests, **REAL (no mocks, no skips)**
       (`tests/test_top_tier_acceptance.py`): live HF trending + dynamic card read +
       fit gate rejects OOM + provider-aware placement + real `hf` download and

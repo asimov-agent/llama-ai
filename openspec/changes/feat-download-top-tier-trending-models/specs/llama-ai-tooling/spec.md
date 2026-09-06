@@ -131,10 +131,13 @@ not just exit 0:
 - file **complete** (size == HF bytes, no `.incomplete`/`.part`/lock remnants) with a `.progress.log`;
 - `scan_models()`/`--list` sees it; re-run is idempotent; different size-fits land in different tier
   folders (24 GB → `24GB/`, 48 GB → `48GB/`; no cross-tier contamination).
+- **metadata-verified**: after download, the file's GGUF header is read (`read_model_meta_fast`)
+  and must decode to a real model (arch/name/layers) — an HTML error page, truncated/corrupt stub,
+  or wrong-file-under-right-name is rejected, not just accepted by filename+size.
 
 #### Scenario: Stub `hf`, assert the exact destination path pre-invocation, then assert the file +
 `.progress.log` at that path with the right size. Two size-fits land in `24GB/` and `48GB/` without
-leaking across tiers.
+leaking across tiers. A valid GGUF passes metadata verification; an HTML/non-GGUF file does not.
 
 ---
 

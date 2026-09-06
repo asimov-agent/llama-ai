@@ -655,6 +655,21 @@ def download_top_tier_candidate(cand, models_root=None):
     rc = subprocess.call(cmd)
     if rc != 0 or not os.path.isfile(final) or os.path.getsize(final) < 100_000_000:
         raise SystemExit(f"[ERROR] top-tier download failed (rc={rc}); file missing/incomplete: {final}")
+    # VERIFY the downloaded file by its GGUF metadata header (not just size/existence):
+    # the file must actually be a readable GGUF model, not an HTML error page or a
+    # truncated/corrupt stub that happens to have the right filename+size.
+    meta = read_model_meta_fast(final)
+    if meta is None:
+        try:
+            meta = read_model_meta(final)   # full reader fallback (handles unusual GGUFs)
+        except Exception:
+            meta = None                     # corrupt/non-GGUF -> reject, never raise
+    if meta is None:
+        raise SystemExit(f"[ERROR] downloaded file is not a valid GGUF model "
+                         f"(metadata unreadable): {final}")
+    print(f"[top-tier] verified downloaded model via GGUF metadata: "
+          f"arch={meta.get('arch')}, name={meta.get('name')}, "
+          f"layers={meta.get('n_layer')}, ctx_train={meta.get('ctx_train')}", flush=True)
     return final
 
 
