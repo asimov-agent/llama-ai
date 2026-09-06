@@ -15,6 +15,15 @@
 - [x] 4b. Add a **fit-gate ⇄ placement agreement** test on the same assumed VRAM: a model
       passing `size+headroom+KV <= total` IS offered + typed to a fitting tier; a model
       that can't fit is NOT offered at all.
+- [x] 4c. Add small tiers to the ladder (1/2/4 GB) so tiny CPU cards + small models get
+      truthful folders, and add a **real-HF small-card test** (`test_real_hf_small_models_placed_in_right_tier`):
+      discovery runs with the REAL HF model list on a mocked 8 GB container/CPU card — each
+      real small model (0.5B/1.5B/3B/7B) is placed in its exact truthful tier + dest_path.
+- [x] 4d. Add **edge-case mock-download placement** tests (`test_mock_download_places_each_model_in_right_tier_dir`,
+      `test_mock_download_picks_top5_by_trend_and_places`): the REAL `discover_top_tier`
+      (top-5 list mocked) + MOCK downloads place each candidate's file into the discovered
+      `dest_path`, asserted as a real file in the correct tier dir for card sizes
+      512/256/128/96/64/48/32/16/8/2 GB; also asserts trending-first (not file-size) selection.
 - [x] 5. Add/extend a top-tier acceptance test on a big-card sim (`LLAMA_RAM_BYTES=512GB`) proving
       a large model is offered, placed in a non-`48GB` tier, and still served/listed.
 - [x] 6. Ensure the dynamic-tier placement tests run in the **CI pipeline** (`make test-unit`

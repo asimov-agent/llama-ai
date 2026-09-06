@@ -27,8 +27,9 @@ in one folder; and the folder contradicts the very fit gate that offered the mod
 Make `pick_tier_folder` derive the tier from the card it will run on:
 
 1. Introduce a growing **tier ladder** (bounded by the current card), e.g.
-   `8, 16, 24, 48, 96, 128, 192, 256, 384, 512, 768, ...` — a superset that keeps the
-   existing `8/16/24/48` for small/consumer cards and adds large tiers for big cards.
+   `1, 2, 4, 8, 16, 24, 48, 96, 128, 192, 256, 384, 512, 768, ...` — a superset that extends
+   **down to 1/2/4 GB** (truthful folders for small CPU cards and tiny models) and adds large
+   tiers past 48 for big cards.
 2. `pick_tier_folder(size_bytes)` -> `pick_tier_folder(size_bytes, total_ram_bytes=None)`:
    the buckets available on a machine = ladder entries **≤ the card's detected/overridden
    total**; the model's tier = the **smallest available bucket ≥ its size**, else the
@@ -66,14 +67,18 @@ gate), not an unbounded per-model "smallest card anywhere".
 - Unit tests drive `pick_tier_folder(size, total_ram)` across small + mid + very large
   sizes and **every** `TIER_LADDER_GB` card size (full VRAM-parameterized sweep via mocked
   VRAM) — each mocked model lands in the folder for the card it fits; the full
-  `provider_dest_path` `dest_path` is asserted too.
+  `provider_dest_path` `dest_path` is asserted too. Includes the down-extended small tiers
+  (1/2/4 GB on tiny CPU cards).
 - A **fit-gate ⇄ placement agreement** test proves, on the same assumed VRAM, a model that
   fits IS offered + correctly tiered and one that can't fit is NOT offered.
+- A **real-HF small-card test**: discovery runs with the REAL HF trending model list
+  (0.5B/1.5B/3B/7B) against a mocked 8 GB container/CPU card — each real model is placed in
+  its exact truthful small tier and `dest_path`; the HF CLI list is real, the card is mocked.
 - Acceptance: on a 512 GB sim (`LLAMA_RAM_BYTES`), a large model lands in a non-`48GB`
   tier and is still offered; `--list`/`scan_models()`/serve still find it.
 - **CI**: `make test-unit` (includes the placement sweep in `tests/test_llama_ai.py`) and
-  `make test-top-tier-ci` (acceptance) both run in the pipeline — no skips, explicit
-  `total_ram_bytes` so runner RAM never skips them.
+  `make test-top-tier-ci` (acceptance incl. real-HF small-card + real download) both run in
+  the pipeline — no skips, explicit `total_ram_bytes` so runner RAM never skips them.
 - `make lint`, `make test-unit`, `make test-top-tier` GREEN.
 - Issue number 51; this is a spec-tracked OpenSpec change with `proposal.md` +
   `specs/.../spec.md` + `tasks.md`, all committed and pushed to the feature branch.

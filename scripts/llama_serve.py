@@ -87,11 +87,11 @@ TOP_TIER_FAMILIES = (
     "k2-", "mova",     # IFM/K2-Horizon-MoVA-36B-A4B-GGUF (trend ~74)
 )
 MIN_TOP_TIER_GB = 4.0          # below this the quant file is treated as a toy/small
-# Growing tier ladder for the `TierGB` placement folder. A superset of the old
-# (48,24,16,8) buckets: keeps small/consumer cards identical AND grows past 48 GB so
-# big cards (256/512 GB+) get truthful tier labels instead of everything-capped-at-48GB.
+# Growing tier ladder for the `TierGB` placement folder. Extends DOWN to 1/2/4 GB so
+# tiny CPU cards and small models get truthful folders too, and UP past 48 GB so big
+# cards (256/512 GB+) get truthful tiers instead of everything-capped-at-48GB.
 # Availability is bounded by the detected/overridden card in pick_tier_folder().
-TIER_LADDER_GB = (8, 16, 24, 48, 96, 128, 192, 256, 384, 512, 768, 1024, 1536, 2048, 3072)
+TIER_LADDER_GB = (1, 2, 4, 8, 16, 24, 48, 96, 128, 192, 256, 384, 512, 768, 1024, 1536, 2048, 3072)
 HF_API = "https://huggingface.co/api/models"
 HF_UA = "llama-ai/1.0 (top-tier-download)"
 LLAMA_RAM_ENV = "LLAMA_RAM_BYTES"

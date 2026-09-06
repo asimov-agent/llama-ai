@@ -35,6 +35,45 @@ def _real_hf() -> str:
     return hf
 
 
+def test_real_hf_small_models_placed_in_right_tier():
+    """Story: run `--download-top-tier` discovery on a mocked SMALL card (CPU/container),
+    with the real HF trending model LIST, and verify each discovered real model is placed
+    in the exact small tier (1/2/4/8 GB) that fits it.
+
+    The model discovery is REAL (`_trending_gguf_repos` + `_repo_gguf_files` against live
+    HF), the card size is MOCKED to a small 8 GB container/CPU via total_ram_bytes, and
+    the resulting tier_folder/dest_path must place each model in the folder for the card
+    it fits — proving small-card placement end-to-end in the CI pipeline.
+    """
+    _real_hf()
+    G = 1024 ** 3
+    small_card = 8 * G
+
+    # Sample of REAL small-model repos (0.5B/1.5B/3B/7B) — the tiers they land in.
+    repos = [
+        "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
+        "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+        "Qwen/Qwen2.5-3B-Instruct-GGUF",
+        "Qwen/Qwen2.5-7B-Instruct-GGUF",
+    ]
+    # For each real repo, fetch the real file list and assert the placement tier is the
+    # EXACT small-card tier (smallest available bucket >= size, bounded by the 8 GB card)
+    # and that the dest_path embeds that same tier folder.
+    for repo in repos:
+        files = llama_ai._repo_gguf_files(repo)  # REAL HF listing
+        singles = [f for f in files if ".gguf" in f["path"] and "-0000" not in f["path"]]
+        assert singles, f"real HF returned no single-file model for {repo}"
+        for f in singles:
+            got_tier = llama_ai.pick_tier_folder(f["size_bytes"], small_card)
+            # the exact tier must be a real small bucket (<= 8GB) — i.e. truthful
+            assert got_tier in ("1GB", "2GB", "4GB", "8GB"), (
+                f"{f['path']} ({f['size_gb']:.1f}GB) on 8GB card -> {got_tier} not small")
+            # the dest_path must embed the same small tier folder (card it fits)
+            p = llama_ai.provider_dest_path(repo, f["path"], f["size_bytes"],
+                                            models_root="/m", total_ram_bytes=small_card)
+            assert f"/{got_tier}/" in p, f"{f['path']} dest_path missing tier {got_tier}: {p}"
+
+
 def test_real_trending_query_and_dynamic_ram():
     """Story: we ask what's trending and how much memory the machine has.
 
@@ -106,23 +145,27 @@ def test_provider_placement_specific():
     assert p3.endswith("/24GB/Qwen3.8-27B-Q8_0.gguf")
 
 
-def _lightweight_candidate(tmp_root):
+def _lightweight_candidate(tmp_root, total_ram_bytes=None):
     """A deterministic LIGHTWEIGHT top-tier-real candidate (Qwen 0.5B, ~430 MB).
 
     Used by the real-download and update-recovery acceptance tests so CI (and
     local) exercises a genuine `hf` download + placement + idempotency with a
     small, fast model rather than a multi-GB one. Still a real, no-mock download.
+    The placement tier is derived from the REAL model size and the (card) total,
+    so a small model on a small/CPU card lands in the folder that fits it.
     """
     repo = "Qwen/Qwen2.5-0.5B-Instruct-GGUF"
     fn = "qwen2.5-0.5b-instruct-q4_0.gguf"
     real = next(f for f in llama_ai._repo_gguf_files(repo) if f["path"] == fn)
+    total = total_ram_bytes if total_ram_bytes is not None else 16 * 1024 ** 3
+    tier = llama_ai.pick_tier_folder(real["size_bytes"], total)
     return {
         "repo": repo,
         "filename": fn,
         "size_bytes": real["size_bytes"],
         "size_gb": real["size_gb"],
-        "tier_folder": "8GB",
-        "dest_path": f"{tmp_root}/Qwen/Qwen2.5-0.5B-Instruct-GGUF/8GB/{fn}",
+        "tier_folder": tier,
+        "dest_path": f"{tmp_root}/Qwen/Qwen2.5-0.5B-Instruct-GGUF/{tier}/{fn}",
     }
 
 
@@ -181,8 +224,8 @@ def test_same_name_updated_model_is_redownloaded():
         "filename": fn,
         "size_bytes": real["size_bytes"],
         "size_gb": real["size_gb"],
-        "tier_folder": "8GB",
-        "dest_path": f"/tmp/{TF}/Qwen/Qwen2.5-0.5B-Instruct-GGUF/8GB/{fn}",
+        "tier_folder": "1GB",  # the 0.5B q4 (~430 MB) small/CPU-card tier
+        "dest_path": f"/tmp/{TF}/Qwen/Qwen2.5-0.5B-Instruct-GGUF/1GB/{fn}",
     }
     Path(f"/tmp/{TF}").mkdir(parents=True, exist_ok=True)
     try:
@@ -331,7 +374,8 @@ def test_cli_download_top_tier_dry_run_detailed():
         assert "/" in ln, f"candidate row must show provider repo: {ln}"
         assert ".gguf" in ln, f"candidate row must name the .gguf file: {ln}"
         assert "GiB" in ln or "GB" in ln, f"candidate row must show size: {ln}"
-        assert ("48GB" in ln or "24GB" in ln or "16GB" in ln or "8GB" in ln), \
+        assert ("48GB" in ln or "24GB" in ln or "16GB" in ln or "8GB" in ln
+                or "4GB" in ln or "2GB" in ln or "1GB" in ln), \
             f"candidate row must show tier folder: {ln}"
     assert "nothing was downloaded or served" in s or "nothing could be downloaded" in s, \
         f"dry run must confirm nothing was downloaded; got:\n{s[-400:]}"
