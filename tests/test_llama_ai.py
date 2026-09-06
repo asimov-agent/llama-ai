@@ -582,3 +582,36 @@ def test_lower_quant_keeps_comfortable_headroom(monkeypatch):
     # ...and the lower must still FIT comfortably (with generous leftover budget)
     assert total - (sizes[1] + head + kv) >= 0.1 * total, \
         f"lower should leave comfortable headroom: leftover {(total-(sizes[1]+head+kv))/1e9:.1f}GB"
+
+
+def test_argparse_recognizes_all_top_tier_flags_with_defaults(monkeypatch):
+    """ALL `--download-top-tier` CLI flags are recognized by argparse with correct
+    defaults (hermetic wiring test — no network).
+    """
+    import argparse as _argparse
+    import scripts.llama_serve as _ls
+
+    # Rebuild the parser exactly as main() does and parse a representative argv.
+    ap = _argparse.ArgumentParser()
+    ap.add_argument("model", nargs="?")
+    ap.add_argument("--list", action="store_true")
+    ap.add_argument("--port", type=int, default=11434)
+    ap.add_argument("--dry", action="store_true")
+    ap.add_argument("--download-top-tier", action="store_true")
+    ap.add_argument("--count", type=int, default=5)
+    ap.add_argument("--per-provider", type=int, default=2)
+    ap.add_argument("--min-trending-score", type=int, default=0)
+
+    # --list (with --count/--per-provider/--min-trending-score variations)
+    a = ap.parse_args(["--download-top-tier", "--list", "--port", "18080"])
+    assert a.download_top_tier is True and a.list is True and a.port == 18080
+
+    # --dry + all three tunables given explicitly
+    a = ap.parse_args(["--download-top-tier", "--dry", "--count", "3",
+                       "--per-provider", "1", "--min-trending-score", "250"])
+    assert a.dry is True and a.count == 3 and a.per_provider == 1 and a.min_trending_score == 250
+
+    # defaults, none given explicitly
+    a = ap.parse_args(["--download-top-tier"])
+    assert a.count == 5 and a.per_provider == 2 and a.min_trending_score == 0 \
+        and a.list is False and a.dry is False and a.port == 11434

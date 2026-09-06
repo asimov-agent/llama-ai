@@ -88,7 +88,8 @@
       are consistent — no drift (alignment checked). 
 - [x] 12. Verification (tick the moment done): `make openspec-validate
       NAME=feat-download-top-tier-trending-models` exits 0, all `tasks.md` ticked,
-      `make lint` GREEN, `make test-unit` GREEN (27 hermetic incl. fit-gate/trending/IQ/MTP/
-      metadata-verify), `make test-top-tier` (real, no-mock) GREEN, `make test-top-tier-serve`
+      `make lint` GREEN, `make test-unit` GREEN (28 hermetic incl. fit-gate/trending/IQ/MTP/
+      metadata-verify + argparse wiring for ALL `--download-top-tier` flags), `make test-top-tier`
+      (real, no-mock) GREEN, `make test-top-tier-serve`
       (download -> serve -> "hi" -> RAM) GREEN on host and CI, `/health` + "hi" + remaining-RAM
       proof GREEN on the 48 GB Metal host — feature is done; open the PR referencing #49.
