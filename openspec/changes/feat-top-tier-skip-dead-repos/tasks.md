@@ -19,6 +19,6 @@
 - [x] 7. Add real-HF tests: `unsloth/...` probes `ok` (real GGUF chunk → 200 auth-ok),
       `orcarouter/...` probes `access-denied`, a dead file probes `dead` — no mocks/skips —
       wired into `make test-top-tier-ci` (CI top-tier job).
-- [ ] 8. Verify: `make lint`, `make test-unit`, `make test-top-tier`, `make openspec-validate
+- [x] 8. Verify: `make lint`, `make test-unit`, `make test-top-tier`, `make openspec-validate
       NAME=feat-top-tier-skip-dead-repos`; commit + push each batch; open PR against `main`
       referencing issue #53.
