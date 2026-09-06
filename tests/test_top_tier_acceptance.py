@@ -105,10 +105,31 @@ def test_provider_placement_specific():
     assert p3.endswith("/24GB/Qwen3.8-27B-Q8_0.gguf")
 
 
+def _lightweight_candidate(tmp_root):
+    """A deterministic LIGHTWEIGHT top-tier-real candidate (Qwen 0.5B, ~430 MB).
+
+    Used by the real-download and update-recovery acceptance tests so CI (and
+    local) exercises a genuine `hf` download + placement + idempotency with a
+    small, fast model rather than a multi-GB one. Still a real, no-mock download.
+    """
+    repo = "Qwen/Qwen2.5-0.5B-Instruct-GGUF"
+    fn = "qwen2.5-0.5b-instruct-q4_0.gguf"
+    real = next(f for f in llama_ai._repo_gguf_files(repo) if f["path"] == fn)
+    return {
+        "repo": repo,
+        "filename": fn,
+        "size_bytes": real["size_bytes"],
+        "size_gb": real["size_gb"],
+        "tier_folder": "8GB",
+        "dest_path": f"{tmp_root}/Qwen/Qwen2.5-0.5B-Instruct-GGUF/8GB/{fn}",
+    }
+
+
 def test_real_download_then_repeat_is_fast_and_safe():
     """Story: download a real top model, then run again without clobbering.
 
-    Given  I ask for the smallest top-tier model that fits this machine,
+    Given  I ask for a small real top-tier model (lightweight so this is a quick,
+           genuine download usable in a CPU CI stage),
     When   the tool downloads it for real into a by-owner/by-size folder,
     Then   the file must actually exist on disk, be a complete download (not a
            partial stub), and be in exactly the place we expected,
@@ -116,23 +137,24 @@ def test_real_download_then_repeat_is_fast_and_safe():
     Then   it must not error and must end up at the same place (idempotent).
     """
     _real_hf()
-    # Use a SMALL card budget so the top-tier pick is the smallest fitting top-tier
-    # model (fast real download), appropriate for a CPU CI stage. Still a real,
-    # no-mock download of a genuine top-tier quant (>= MIN_TOP_TIER_GB).
-    small_total = 8 * 1024 ** 3         # simulate a small card to force a small fit
-    small_head = 1 * 1024 ** 3
-    cands = llama_ai.discover_top_tier(limit=1, total_ram_bytes=small_total,
-                                       headroom_bytes=small_head)
-    assert cands, "expected a small top-tier model to fit an 8 GB budget"
-    final = llama_ai.download_top_tier_candidate(cands[0], models_root=None)
-    assert Path(final).is_file(), f"downloaded file missing: {final}"
-    size = Path(final).stat().st_size
-    assert size >= cands[0]["size_bytes"] - (64 * 1024 * 1024), \
-        f"file incomplete: {size/1e9:.2f} GB vs expected {cands[0]['size_bytes']/1e9:.2f} GB"
-    assert str(Path(final)) == cands[0]["dest_path"], "file must land in the by-owner/by-size folder"
+    tf = f"/tmp/llama-real-dl-{os.getpid()}"
+    Path(tf).mkdir(parents=True, exist_ok=True)
+    try:
+        cand = _lightweight_candidate(tf)
+        dest = str(Path(cand["dest_path"]))
+        final = llama_ai.download_top_tier_candidate(
+            dict(cand, dest_path=dest), models_root=tf)
+        assert Path(final).is_file(), f"downloaded file missing: {final}"
+        size = Path(final).stat().st_size
+        assert size >= cand["size_bytes"] - (64 * 1024 * 1024), \
+            f"file incomplete: {size/1e9:.2f} GB vs expected {cand['size_bytes']/1e9:.2f} GB"
+        assert str(Path(final)) == dest, "file must land in the by-owner/by-size folder"
 
-    final2 = llama_ai.download_top_tier_candidate(cands[0], models_root=None)
-    assert final2 == final, "second run must end up at the same file (no error, no clobber)"
+        final2 = llama_ai.download_top_tier_candidate(
+            dict(cand, dest_path=dest), models_root=tf)
+        assert final2 == final, "second run must end up at the same file (no error, no clobber)"
+    finally:
+        shutil.rmtree(tf, ignore_errors=True)
 
 
 def test_same_name_updated_model_is_redownloaded():
