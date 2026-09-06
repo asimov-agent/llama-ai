@@ -367,9 +367,10 @@ def test_discover_top_tier_min_trending_score_filters(monkeypatch):
     assert none == []
 
 
-def test_discover_top_tier_one_per_provider(monkeypatch):
-    """discover_top_tier must return at most ONE candidate per provider (owner),
-    so a variety of popular providers is offered, not many quants of one."""
+def test_discover_top_tier_high_and_lower_per_provider(monkeypatch):
+    """discover_top_tier must offer, from each provider, a HIGH quant plus a clearly
+    LOWER quant (e.g. Q8 + Q4), grouped per provider — not just one Q8 per provider
+    (which barely fits) nor all-Q8 picks across many providers."""
     repos = [
         {"repo": "unsloth/Qwen3.8-27B-GGUF", "downloads": 1, "likes": 1, "trendingScore": 300},
         {"repo": "unsloth/Qwen3.8-27B-UD-GGUF", "downloads": 1, "likes": 1, "trendingScore": 280},
@@ -377,18 +378,44 @@ def test_discover_top_tier_one_per_provider(monkeypatch):
          "trendingScore": 120},
     ]
 
+    files_by_repo = {
+        "unsloth/Qwen3.8-27B-GGUF": [
+            {"path": "model-Q8_0.gguf", "size_bytes": 20 * 1024 ** 3, "size_gb": 20.0},
+            {"path": "model-Q4_K_M.gguf", "size_bytes": 12 * 1024 ** 3, "size_gb": 12.0},  # clearly lower
+        ],
+        "unsloth/Qwen3.8-27B-UD-GGUF": [
+            {"path": "model-Q6_K.gguf", "size_bytes": 16 * 1024 ** 3, "size_gb": 16.0},
+            {"path": "model-Q3_K_S.gguf", "size_bytes": 9 * 1024 ** 3, "size_gb": 9.0},
+        ],
+        "orcarouter/Qwen3.8-27B-Uncensored-GGUF": [
+            {"path": "model-Q8_0.gguf", "size_bytes": 20 * 1024 ** 3, "size_gb": 20.0},
+            {"path": "model-Q4_K_M.gguf", "size_bytes": 12 * 1024 ** 3, "size_gb": 12.0},
+        ],
+    }
+
     def fake_trending(limit=25):
         return repos
 
     def fake_files(repo):
-        return [{"path": "model-Q8_0.gguf", "size_bytes": 5 * 1024 ** 3, "size_gb": 5.0}]
+        return files_by_repo[repo]
 
     monkeypatch.setattr(llama_ai, "_trending_gguf_repos", fake_trending)
     monkeypatch.setattr(llama_ai, "_repo_gguf_files", fake_files)
     monkeypatch.setattr(llama_ai, "MIN_TOP_TIER_GB", 1.0)
 
-    result = llama_ai.discover_top_tier(limit=5, total_ram_bytes=48 * 1024 ** 3,
-                                        headroom_bytes=3 * 1024 ** 3, min_trending_score=0)
-    owners = [c["repo"].split("/", 1)[0] for c in result]
-    assert owners == ["unsloth", "orcarouter"], "one candidate per provider, best owner first"
-    assert len(owners) == len(set(owners)), "no duplicate provider"
+    # 2 providers x 2 quants (high+lower)
+    result = llama_ai.discover_top_tier(limit=4, total_ram_bytes=48 * 1024 ** 3,
+                                        headroom_bytes=3 * 1024 ** 3, min_trending_score=0,
+                                        per_provider=2)
+    # grouped per provider: both unsloth repos come before orcarouter's, high->lower each
+    providers = []
+    for c in result:
+        providers.append((c["repo"].split("/", 1)[0], c["size_bytes"] // (1024 ** 3)))
+    # two providers appear; each appears with exactly its high+lower pair
+    unsloth = [b for (o, b) in providers if o == "unsloth"]
+    assert unsloth[0] > unsloth[1], f"unsloth must be high->lower: {unsloth}"
+    assert (unsloth[0] - unsloth[1]) >= 0.25 * unsloth[0], f"lower must be clearly lower"
+    orca = [b for (o, b) in providers if o == "orcarouter"]
+    assert orca[0] > orca[1], "orcarouter must be high->lower"
+    assert (orca[0] - orca[1]) >= 0.25 * orca[0], "lower must be clearly lower"
+    assert len(providers) == 4, f"expected 4 (2 providers x 2 quants), got {providers}"

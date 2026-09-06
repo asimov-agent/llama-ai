@@ -50,12 +50,23 @@ final_path = os.path.join(dest, filename)
 MAX_RETRY = 20
 
 def tree_bytes(path):
+    """Bytes of the CURRENT target file only (final + any live .incomplete partial).
+
+    Counts just the file this downloader is fetching — NOT the whole model dir — so
+    the percentage reflects only this model (resets to 0% for each new/next download)
+    and isn't inflated by sibling models already in the same provider tier folder.
+    """
     total = 0
-    for root, dirs, files in os.walk(path):
+    # the final file, if already fully placed
+    if os.path.isfile(final_path):
+        total += os.path.getsize(final_path)
+    # the in-progress partial (hf writes `<etag>.incomplete` under .cache)
+    for root, _, files in os.walk(os.path.join(path, ".cache"), topdown=True):
         for f in files:
-            if f.endswith(".lock") or "progress.log" in f:
-                continue
-            total += os.path.getsize(os.path.join(root, f))
+            if f.endswith(".incomplete"):
+                p = os.path.join(root, f)
+                if os.path.isfile(p):
+                    total += os.path.getsize(p)
     return total
 
 # ---------------------------------------------------------------------------

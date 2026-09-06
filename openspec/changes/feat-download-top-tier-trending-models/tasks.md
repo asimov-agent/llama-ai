@@ -27,9 +27,15 @@
       `download_test_model.py`; abort with clear error if `hf` absent. Place into
       provider-aware `~/{MODELS_ROOT}/<owner>/<model-family>/<TierGB>/` (owner = HF repo
       owner who created/quantized it). Idempotent against FULL size (resume partial).
-- [x] 8. Serve-after-download: reuse `build_command()` + existing `main()` flow so
-      `--download-top-tier` can fetch and serve in one invocation (honor `--port`,
-      `--dry`; keep `--alias llm-local`).
+- [x] 8. Download-only: `--download-top-tier` must NEVER start llama-server — it downloads,
+      places, and reports available models, then exits. Serving a downloaded model is a
+      separate explicit command (`llama-ai <name>`), which reuses `build_command()` +
+      existing `main()` flow (honors `--port`, `--dry`; keeps `--alias llm-local`).
+- [x] 8b. Per-provider high+lower quants: `discover_top_tier(..., per_provider=2)` offers, from
+      each provider, the best-fit HIGH quant plus a clearly-LOWER quant (~25% smaller, e.g. Q4/Q5/Q6);
+      `--count` = number of PROVIDERS, each yielding per_provider quants (so `--count 5` => up to
+      10 models). `--per-provider` flag (default 2) controls it. Percentage progress counts ONLY the
+      current file (resets to 0% per model, not inflated by siblings).
 - [x] 9. Acceptance tests, **REAL (no mocks, no skips)**
       (`tests/test_top_tier_acceptance.py`): live HF trending + dynamic card read +
       fit gate rejects OOM + provider-aware placement + real `hf` download and

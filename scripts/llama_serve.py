@@ -524,74 +524,87 @@ def _split_repo(repo):
 
 
 def discover_top_tier(limit=10, total_ram_bytes=None, headroom_bytes=None,
-                      min_trending_score=0):
+                      min_trending_score=0, per_provider=2):
     """Ranked top-tier GGUF candidates that FIT the card, with real file sizes.
 
     Combines the three signals (trending + top-tier family + fit gate) using the
-    dynamic total/headroom read from the card. Returns a list of dicts:
+    dynamic total/headroom read from the card. For each trending provider (owner)
+    it offers `per_provider` candidates at DIFFERENT quant sizes: the best
+    (highest-fidelity that still fits comfortably) plus a lighter quant — so you
+    get variety of BOTH provider and quantization quality, and the lower quants
+    fit with comfortable margin instead of "barely fits". Returns a list of dicts:
       {repo, filename, size_gb, size_bytes, downloads, likes,
        trendingScore, tier_folder, dest_path}
-    sorted by the "top tier" order: highest-fidelity (largest) fit first, then by
-    trendingScore, so the strongest pick surfaces first. `limit` = how many to return;
-    `min_trending_score` = only repos with trendingScore >= this are considered (a
-    "rated high enough" floor so niche/unrated models don't show).
+    ranked best-quality first, then trending. `limit` = total candidates to return;
+    `min_trending_score` = rating floor.
     """
     total = total_ram_bytes if total_ram_bytes is not None else read_total_ram_bytes()
     head = headroom_bytes if headroom_bytes is not None else read_current_headroom_bytes(total)
     kv_reserve = 1 * 1024 ** 3  # conservative KV headroom for the fit gate
 
-    cands = []
-    for repo_info in _trending_gguf_repos(limit=limit * 3):
-        # rating floor: only repos that are genuinely trending (trendingScore >= threshold)
-        if repo_info["trendingScore"] < min_trending_score:
-            continue
-        repo = repo_info["repo"]
+    def candidate_files(repo):
         try:
             files = _repo_gguf_files(repo)
         except SystemExit:
-            continue
-        big_enough = sorted(
+            return []
+        return sorted(
             [f for f in files if f["size_gb"] >= MIN_TOP_TIER_GB
              and not os.path.basename(f["path"]).startswith(("mmproj", "Qwen_VL"))
-             # exclude split multi-file models (can't serve a single shard):
              and "-multi-of-" not in os.path.basename(f["path"])
              and "-00001-of-" not in os.path.basename(f["path"])
              and "0000" not in os.path.basename(f["path"])],
             key=lambda f: f["size_gb"], reverse=True,
         )
-        chosen = None
-        for f in big_enough:
-            if f["size_bytes"] + head + kv_reserve <= total:
-                chosen = f
-                break  # largest that fits
-        if chosen is None:
+
+    # Per provider: take the best-fit (largest = highest quant) and then a clearly
+    # LOWER quant (Q4/Q5/Q6 class, ~30%+ smaller) so you get high + lower quality
+    # variety from each provider, and the lower quants fit with comfortable margin.
+    # Both must fit comfortably.
+    cands = []
+    for repo_info in _trending_gguf_repos(limit=limit * 3):
+        if repo_info["trendingScore"] < min_trending_score:
             continue
-        cands.append({
-            "repo": repo,
-            "filename": os.path.basename(chosen["path"]),
-            "size_bytes": chosen["size_bytes"],
-            "size_gb": chosen["size_gb"],
-            "downloads": repo_info["downloads"],
-            "likes": repo_info["likes"],
-            "trendingScore": repo_info["trendingScore"],
-            "tier_folder": pick_tier_folder(chosen["size_bytes"]),
-            "dest_path": provider_dest_path(repo, os.path.basename(chosen["path"]),
-                                            chosen["size_bytes"]),
-        })
-    # Rank by quality (largest fitting quant = highest fidelity that still fits),
-    # then by trending score, so the strongest top-tier pick surfaces first.
-    cands.sort(key=lambda c: (-c["size_gb"], -c["trendingScore"]))
-    # Variety: one candidate per provider (owner), so we offer the best model from
-    # each of several popular providers rather than several quants of the same one.
-    seen = set()
-    by_provider = []
+        repo = repo_info["repo"]
+        files = candidate_files(repo)
+        owner_picks = []
+        best = None
+        for f in files:
+            if f["size_bytes"] + head + kv_reserve > total:
+                continue  # doesn't fit comfortably -> skip
+            if best is None:
+                best = f["size_bytes"]
+                owner_picks.append(f)
+                continue
+            # 2nd+ pick: must be a clearly-different (lower) quant tier (~25% smaller)
+            if best - f["size_bytes"] >= 0.25 * best:
+                owner_picks.append(f)
+                best = f["size_bytes"]  # allow a further-lower quant after this one
+            if len(owner_picks) >= per_provider:
+                break
+        for chosen in owner_picks:
+            cands.append({
+                "repo": repo,
+                "filename": os.path.basename(chosen["path"]),
+                "size_bytes": chosen["size_bytes"],
+                "size_gb": chosen["size_gb"],
+                "downloads": repo_info["downloads"],
+                "likes": repo_info["likes"],
+                "trendingScore": repo_info["trendingScore"],
+                "tier_folder": pick_tier_folder(chosen["size_bytes"]),
+                "dest_path": provider_dest_path(repo, os.path.basename(chosen["path"]),
+                                                chosen["size_bytes"]),
+            })
+    # Rank so a provider's high + lower quants stay together (group by provider),
+    # ordered by the provider's best quality then trending; cut to `limit` total.
+    # This yields "Q8 + lower quant(s) from each provider" rather than all-Q8 picks.
+    cands.sort(key=lambda c: (c["repo"], -c["size_gb"]))              # group by provider, high first
+    providers = {}
     for c in cands:
-        owner = c["repo"].split("/", 1)[0]
-        if owner in seen:
-            continue
-        seen.add(owner)
-        by_provider.append(c)
-    return by_provider[:limit]
+        providers.setdefault(c["repo"], []).append(c)
+    ordered = []
+    for repo in sorted(providers, key=lambda r: -providers[r][0]["size_gb"]):
+        ordered.extend(providers[repo])
+    return ordered[:limit]
 
 
 def download_top_tier_candidate(cand, models_root=None):
@@ -709,13 +722,17 @@ def _main_download_top_tier(args):
                 highest-ranked one (unless --list). Honors --port/--dry.
     """
     limit = max(1, args.count)
+    per_provider = max(1, args.per_provider or 2)   # high + lower quant per provider
     print(f"[top-tier] detecting memory on the actual card ...")
     total = read_total_ram_bytes()
     head = read_current_headroom_bytes()
     print(f"[top-tier] total RAM = {total/(1024**3):.0f} GB, headroom (wired+safety) = "
           f"{head/(1024**3):.1f} GB")
-    cands = discover_top_tier(limit=limit, total_ram_bytes=total, headroom_bytes=head,
-                              min_trending_score=args.min_trending_score)
+    # `--count` = number of PROVIDERS; each yields per_provider quants (high+lower).
+    cands = discover_top_tier(limit=max(1, limit * per_provider),
+                              total_ram_bytes=total, headroom_bytes=head,
+                              min_trending_score=args.min_trending_score,
+                              per_provider=per_provider)
     if not cands:
         print("[top-tier] no trending top-tier GGUF model fits the available card right now. "
               "Nothing downloaded.")
@@ -762,25 +779,14 @@ def _main_download_top_tier(args):
         else:
             print(f"  SKIPPED {c['repo']} after {RETRIES} failed attempts.", file=sys.stderr)
     if not completed:
-        print("[top-tier] nothing could be downloaded; not serving.")
+        print("[top-tier] nothing could be downloaded.")
         sys.exit(1)
     print(f"\n[top-tier] completed {len(completed)}/{len(cands)} provider(s).")
-    # serve the highest-ranked candidate that we now have locally.
-    os.environ["LLAMA_RAM_BYTES"] = str(total)   # keep the fit math consistent for serve
-    models = scan_models()
-    if not models:
-        print("[top-tier] no .gguf found after download under {MODELS_ROOT}")
-        sys.exit(1)
-    # pick the same file we downloaded (by exact path) — the best COMPLETED one.
-    from pathlib import Path as _P
-    best = completed[0]
-    chosen = next((m for m in models
-                   if _P(m["file"]).resolve() == _P(best["dest_path"]).resolve()), None)
-    if chosen is None:
-        # fall back to largest local model (should still be the just-downloaded one)
-        chosen = models[0]
-        print(f"[top-tier] (serving highest-ranked downloaded model: {chosen['file']})")
-    _serve_chosen(chosen, args)
+    print("[top-tier] downloaded models are available to serve. Use the normal "
+          "launch path (e.g. `llama-ai <model-name>`) to start llama-server — "
+          "`--download-top-tier` only downloads; it never auto-starts the server.")
+    for i, c in enumerate(completed, 1):
+        print(f"  {i}. {c['repo']}::{c['filename']}  -> {c['dest_path']}")
 
 
 def _serve_chosen(chosen, args):
@@ -831,11 +837,14 @@ def main():
     ap.add_argument("--dry", action="store_true", help="print command without running")
     ap.add_argument("--download-top-tier", action="store_true",
                     help="discover + download the currently-trending top-tier GGUF model(s) "
-                         "that fit the actual GPU/CPU card, then serve (unless --list/--dry)")
+                         "that fit the actual GPU/CPU card. DOWNLOAD ONLY — never auto-starts "
+                         "llama-server; serve a downloaded model separately with `llama-ai <name>`.")
     ap.add_argument("--count", type=int, default=5,
-                    help="with --download-top-tier: number of distinct PROVIDERS' top models "
-                         "to download (one best-fitting model per provider, default 5 for "
-                         "variety of what's popular now)")
+                    help="with --download-top-tier: number of distinct PROVIDERS to download "
+                         "(each yields high + lower quants, default 5 = variety of what's popular)")
+    ap.add_argument("--per-provider", type=int, default=2,
+                    help="with --download-top-tier: quants per provider (default 2 = best + a "
+                         "lower Q4/Q5/Q6 so each fits comfortably, not just Q8)")
     ap.add_argument("--min-trending-score", type=int, default=0,
                     help="with --download-top-tier: only consider repos whose HF trendingScore "
                          "is >= this (0 = any trending that fits). A rating floor so niche/"

@@ -211,23 +211,36 @@ def test_same_name_updated_model_is_redownloaded():
         shutil.rmtree(f"/tmp/{TF}", ignore_errors=True)
 
 
-def test_discover_one_model_per_provider():
-    """Story: a variety of popular makers, not many models from one.
+def test_discover_high_and_lower_quants_per_provider():
+    """Story: get high + lower quants from each popular maker.
 
-    Given  I ask for the top 5 top-tier models that fit this machine,
+    Given  I ask for the top-5 trending top-tier models that fit this machine,
     When   the tool looks up what's trending and what fits,
-    Then   it must return up to 5 DISTINCT makers (one model each) so I get a
-           variety of what's popular now — never several quants from the same
-           provider crowding out others.
+    Then   it must return up to the number of providers I asked for, offering from
+           each maker a HIGH quant (Q8, the highest fidelity that fits) AND a LOWER
+           quant (clearly smaller, e.g. Q4/Q5/Q6 so it fits comfortably) — never
+           only the largest Q8 of each provider (which would barely fit and give no
+           quantization variety).
     """
     total = llama_ai.read_total_ram_bytes()
     head = llama_ai.read_current_headroom_bytes(total)
-    cands = llama_ai.discover_top_tier(limit=5, total_ram_bytes=total, headroom_bytes=head)
-    # only distinct providers
-    owners = [c["repo"].split("/", 1)[0] for c in cands]
-    assert len(owners) == len(set(owners)), "must be one candidate per provider"
-    # no provider collapsed to an empty result
-    assert all(c["repo"].count("/") == 1 for c in cands)
+    cands = llama_ai.discover_top_tier(limit=4, total_ram_bytes=total, headroom_bytes=head,
+                                       per_provider=2)
+    assert cands, "expected top-tier candidates to fit"
+    # For each provider, its picks must be a HIGH quant plus a clearly-LOWER quant:
+    # each successive pick is meaningfully smaller than the previous (a different tier).
+    from collections import OrderedDict
+    per_provider = OrderedDict()
+    for c in cands:
+        per_provider.setdefault(c["repo"].split("/", 1)[0], []).append(c)
+    for owner, picks in per_provider.items():
+        sizes = [p["size_bytes"] for p in picks]
+        assert sizes == sorted(sizes, reverse=True), f"{owner} picks must be high->lower"
+        if len(sizes) >= 2:
+            # a 2nd (lower) pick must be a clearly different quant tier (~25%+ smaller)
+            assert (sizes[0] - sizes[1]) >= 0.25 * sizes[0], \
+                f"{owner} 2nd pick not a clearly-lower quant: {sizes[0]/1e9:.1f}->{sizes[1]/1e9:.1f}GB"
+        assert all(c["repo"].count("/") == 1 for c in picks)
 
 
 def test_default_count_is_five():
@@ -238,12 +251,14 @@ def test_default_count_is_five():
     Then   the default number of providers to download is 5 (a variety of what's
            popular now), not 1.
     """
-    # Read the launcher's own help to confirm the real CLI default for --count.
+    # Read the launcher's own help and confirm --count's default is 5, tolerating
+    # the argparse line-wrap of "default 5" (which may split across lines).
     out = subprocess.run([sys.executable, str(REPO / "scripts/llama_serve.py"),
                           "--help"], capture_output=True, text=True).stdout
-    # help text documents the default 5 as prose: "model per provider, default 5 for variety"
-    assert "default 5" in out, "launcher --help must document --count default 5"
-    assert "--count" in out
+    assert "--count" in out, "--help must document --count"
+    # "default 5" may wrap:  "--count COUNT ... default\n                       5 = ..."
+    import re
+    assert re.search(r"default\s*5", out), "--help must document --count default 5"
 
 
 def test_download_progress_shows_percentage():

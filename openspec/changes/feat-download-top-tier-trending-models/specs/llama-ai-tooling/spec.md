@@ -85,12 +85,16 @@ depth) sees it immediately — no scanner change.
 #### Scenario: `unsloth/Qwen3.8-27B-GGUF` Q8_0 → `~/models/unsloth/Qwen3.8-27B/48GB/...`; `--list`
 shows it and the owner is obvious from the path.
 
-### Requirement: A5 — Serve after download (single invocation)
-WHEN `--download-top-tier` downloads and serves (not `--list`), THEN it reuses `build_command()`
-(tuning, sampling, `--alias llm-local`, reasoning) and the existing serve flow, honoring `--port`
+### Requirement: A5 — Download ONLY; never auto-start llama-server
+WHEN `--download-top-tier` runs, THEN it downloads/places the selected model(s) and
+**never** launches llama-server — the download command has no serving side-effect. To
+serve a downloaded model you use the normal launch path (`llama-ai <name>`), which reuses
+`build_command()` (tuning, sampling, `--alias llm-local`, reasoning) honoring `--port`
 and `--dry`.
 
-#### Scenario: `llama-ai --download-top-tier --port 11434` downloads then serves on 11434.
+#### Scenario: `llama-ai --download-top-tier --count 5` downloads up to 5 providers × 2
+#### quants (high + lower) and exits WITHOUT starting a server. Serving any of them is a
+#### separate, explicit command.
 
 ### Requirement: A6 — Dynamic GPU load + "hi" verification with remaining-RAM proof
 WHEN verification loads a downloaded model, THEN it **proves** "fits" (does not assume it):
