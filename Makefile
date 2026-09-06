@@ -193,6 +193,16 @@ test-top-tier-ci: ## REAL top-tier acceptance inside the test container (CI/CPU)
 	# (no pin) so it uses the real card.
 	$(TEST_RUN) sh -c 'LLAMA_RAM_BYTES=17179869184 python -m pytest tests/test_top_tier_acceptance.py -p no:cacheprovider -q -m acceptance'
 
+test-top-tier-serve: ## Download a lightweight top-tier model, load it, answer 'hi', check RAM (host GPU or CPU).
+	# End-to-end serve proof for the downloaded top-tier model: real lightweight download,
+	# launch llama-server, /health, POST "hi" (assert reply), re-measure RAM for headroom.
+	@echo "==> Serving a downloaded lightweight top-tier model and answering 'hi'"
+	@HF_BIN="$${HF_BIN:-$(shell command -v hf || echo $(HOME)/llama-gguf-tools/.venv/bin/hf)}" \
+		$(PY) -m pytest tests/test_top_tier_serve.py -p no:cacheprovider -q -s -m acceptance
+
+test-top-tier-serve-ci: ## Serve test inside the test container (CI/CPU): download lightweight, load, 'hi', RAM.
+	$(TEST_RUN) python -m pytest tests/test_top_tier_serve.py -p no:cacheprovider -q -s -m acceptance
+
 test-health: ## End-to-end CPU health check: ensure model, then tiny model answers 'hi' (containerized)
 	$(TEST_RUN) sh -c 'python scripts/download_test_model.py && python -m pytest tests/test_health.py -p no:cacheprovider -q -s'
 
