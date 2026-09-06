@@ -57,6 +57,11 @@
       elapsed) to the terminal + `.progress.log`; completed models are never re-fetched
       on re-run (idempotent). Covered by `test_discover_one_model_per_provider` +
       `test_default_count_is_five` + unit dedupe test.
+- [x] 9g. Serve-after-download (A6) automated: `test_top_tier_serve.py` downloads a
+      lightweight (0.5B) top-tier model for real, launches llama-server, waits /health,
+      POSTs "hi", asserts a reply, and re-measures RAM to prove headroom remains. Wired
+      as `make test-top-tier-serve` (host) + `test-top-tier-serve-ci` (container/CPU); CI
+      `top-tier` job runs it; loop_harness has a `top-tier-serve` stage.
 - [x] 10. README.md: add `--download-top-tier` workflow, the trend/fit/download
       behaviour, and the tier-folder layout entry for downloaded models.
 - [x] 11. Sync PASS: issue body, OpenSpec change (proposal/spec/tasks), and code/files

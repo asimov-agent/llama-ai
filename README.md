@@ -200,6 +200,8 @@ make test-unit         # hermetic unit tests
 make test-install      # install tests (run in-container; host-artifact asserts skip)
 make test-install-host # verify the REAL host install: ~/bin/llama-ai + symlinks + ~/models (runs on host)
 make test-health       # end-to-end CPU LLM check: downloads tiny model, answers "hi"
+make test-top-tier     # REAL acceptance (no mocks): live HF trending + fit gate + real download
+make test-top-tier-serve  # download a lightweight top-tier model, load llama-server, answer 'hi', check RAM
 make download-test-model  # fetch Qwen2.5-0.5B into ~/models/Qwen/8GB (via `hf` CLI)
 make openspec-validate NAME=<change>   # validate an OpenSpec change
 make test-clean        # prune stopped orphaned test containers (always)
@@ -209,7 +211,7 @@ The `make loop` harness runs these stages in order (each in its own `--rm`
 container), then **always** prunes orphaned containers:
 
 ```
-image → download → lint → unit → install → health → test → openspec → clean
+image → download → lint → unit → install → health → top-tier → top-tier-serve → test → openspec → clean
 ```
 
 - The **`health` stage** is a real end-to-end check: it downloads the
