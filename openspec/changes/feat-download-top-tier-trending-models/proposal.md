@@ -60,7 +60,11 @@ explicit command (`llama-ai <name>`), which reuses `build_command()` (`--alias l
 
 ## Verification
 - `make lint`, `make test-unit` GREEN (hermetic: fit-gate OOM/toy exclusion, dynamic read,
-  placement, downloader invocation, metadata-verify).
+  placement, downloader invocation, metadata-verify, openspec-tasks-check).
+- **NO-SKIP harness**: every test runs and passes — a skip is a red exit (conftest guard);
+  `make test-install-ci` (REAL `make install` + model seed, ONE container, 7 tests run) and
+  `make test-unit` (ALL python test files incl. the folded-in `test_check_openspec_tasks.py`)
+  are GREEN in CI. AGENTS.md carries the durable "NO SKIPPED TESTS" rule.
 - `make test-top-tier` GREEN — real, no-mock acceptance: live HF query + dynamic fit-gate +
   provider placement + real download (idempotent) + same-size-corruption → restored refresh test.
 - `make test-top-tier-serve` GREEN — downloads a **lightweight** top-tier model for real, loads

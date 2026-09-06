@@ -140,6 +140,23 @@ not just exit 0:
 `.progress.log` at that path with the right size. Two size-fits land in `24GB/` and `48GB/` without
 leaking across tiers. A valid GGUF passes metadata verification; an HTML/non-GGUF file does not.
 
+### Requirement: A8 — NO-SKIP test harness (durable; mirrored in AGENTS.md)
+WHEN the test suite runs (host or CI container), THEN **no test may be skipped** — every test runs
+and passes, or the run is a loud failure:
+- all `pytest.skip`/`skipif` are removed; the conftest `pytest_report_teststatus` /
+  `pytest_runtest_logreport` hooks turn any skipped test into a red exit with a clear
+  "provision the prerequisite" message (never silent-green CI on a missing prerequisite);
+- prerequisites are provisioned so tests genuinely run: `make test-install-ci` performs a REAL
+  `make install` + seeds a model and runs `tests/test_install.py` in ONE container (7 tests run,
+  no skip); `make test-health` / `make test-top-tier-serve` download their model/server first;
+- **all python test files are integrated into CI**: `tests/test_install.py` runs via
+  `test-install-ci` (install job); `tests/test_check_openspec_tasks.py` is folded into
+  `make test-unit` (unit job — it was previously orphaned, running nowhere).
+
+#### Scenario: Run `make test-unit` / `make test-install-ci` / `make test-health` in the CI
+container — assert the run reports 0 skipped (any skip -> non-zero exit and a "TEST SKIPPED — no
+skips allowed (AGENTS.md)" failure). Probe: a throwaway `pytest.skip()` test is turned into FAILED.
+
 ---
 
 ## EXISTING Requirements (unchanged)
