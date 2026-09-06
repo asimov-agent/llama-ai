@@ -485,3 +485,72 @@ def test_discover_drops_mtp_companion_files(monkeypatch):
                                         per_provider=2)
     assert result == [], "an MTP-companion-only repo must not produce any top-tier pick"
     assert all("mtp-" not in c["filename"].lower() for c in result)
+
+
+def test_fit_gate_rejects_too_big_model(monkeypatch):
+    """A candidate that does NOT fit must be dropped by the fit gate.
+
+    Given  a tiny card (e.g. 12 GB total, 3 GB headroom, 1 GB KV = ~8 GB budget),
+    When   a provider offers a Q8 quant far bigger than that budget,
+    Then   the fit gate must REJECT it (no pick is returned for that provider) —
+           the calculation must protect against OOM, not just list what's popular.
+    """
+    total_small = 12 * 1024 ** 3        # 12 GiB card
+    head = 3 * 1024 ** 3                # 3 GiB headroom
+    kv = 1024 ** 3                      # 1 GiB KV reserve
+    budget = total_small - head - kv    # = 8 GiB
+
+    # The only file from the #1-trending provider is a 29 GB Q8 — far over budget.
+    repos = [{"repo": "unsloth/Qwen3.8-27B-GGUF", "downloads": 1, "likes": 1, "trendingScore": 999}]
+
+    def fake_trending(limit=25):
+        return repos
+
+    def fake_files(repo):
+        return [{"path": "model-Q8_0.gguf", "size_bytes": 29 * 1024 ** 3, "size_gb": 29.0}]
+
+    monkeypatch.setattr(llama_ai, "_trending_gguf_repos", fake_trending)
+    monkeypatch.setattr(llama_ai, "_repo_gguf_files", fake_files)
+    monkeypatch.setattr(llama_ai, "MIN_TOP_TIER_GB", 1.0)
+
+    result = llama_ai.discover_top_tier(limit=2, total_ram_bytes=total_small,
+                                        headroom_bytes=head, min_trending_score=0, per_provider=2)
+    assert result == [], \
+        "fit gate must REJECT a 29 GB model on a 12 GB card (budget {budget/1e9:.0f}GB), got {result}"
+
+
+def test_lower_quant_keeps_comfortable_headroom(monkeypatch):
+    """The HIGH quant is the biggest that fits; the LOWER quant is chosen ~25%+ smaller
+    so it leaves comfortable headroom (no model teeters at the OOM edge)."""
+    # Simulate a 16 GB card: budget = 16 - head - kv. Use headroom so only the high
+    # fits tightly and the lower must be clearly smaller.
+    total = 24 * 1024 ** 3
+    head = 3 * 1024 ** 3
+    kv = 1024 ** 3
+    # high Q8 = 18 GB (fits: 18+3+1=22 <= 24), lower Q4 = 12 GB (clearly smaller, comfy)
+    repos = [{"repo": "unsloth/Qwen3.8-27B-GGUF", "downloads": 1, "likes": 1, "trendingScore": 900}]
+
+    def fake_trending(limit=25):
+        return repos
+
+    def fake_files(repo):
+        return [{"path": "model-Q8_0.gguf", "size_bytes": 18 * 1024 ** 3, "size_gb": 18.0},
+                {"path": "model-Q4_K_M.gguf", "size_bytes": 12 * 1024 ** 3, "size_gb": 12.0},
+                {"path": "model-Q3_K_M.gguf", "size_bytes": 9 * 1024 ** 3, "size_gb": 9.0}]
+
+    monkeypatch.setattr(llama_ai, "_trending_gguf_repos", fake_trending)
+    monkeypatch.setattr(llama_ai, "_repo_gguf_files", fake_files)
+    monkeypatch.setattr(llama_ai, "MIN_TOP_TIER_GB", 1.0)
+
+    result = llama_ai.discover_top_tier(limit=4, total_ram_bytes=total,
+                                        headroom_bytes=head, min_trending_score=0, per_provider=2)
+    sizes = sorted([c["size_bytes"] for c in result], reverse=True)
+    assert len(sizes) == 2, f"expected high + lower, got {sizes}"
+    # HIGH must be the biggest that still fits with headroom
+    assert sizes[0] + head + kv <= total, f"high must fit with headroom: {sizes[0]/1e9:.1f}GB"
+    # LOWER must be clearly smaller (~25%+), so it leaves even MORE headroom
+    assert (sizes[0] - sizes[1]) >= 0.25 * sizes[0], \
+        f"lower must be clearly smaller: {sizes[0]/1e9:.1f}->{sizes[1]/1e9:.1f}GB"
+    # ...and the lower must still FIT comfortably (with generous leftover budget)
+    assert total - (sizes[1] + head + kv) >= 0.1 * total, \
+        f"lower should leave comfortable headroom: leftover {(total-(sizes[1]+head+kv))/1e9:.1f}GB"
