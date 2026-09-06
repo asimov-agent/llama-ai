@@ -132,5 +132,7 @@ jobs:
         run: make test-top-tier-ci
       - name: "make test-top-tier-serve-ci (lightweight download + load + hi + RAM)"
         run: make test-top-tier-serve-ci
+      - name: "REAL CLI dry run (llama-ai --download-top-tier --dry --count 2 in-container)"
+        run: make test-top-tier-cli-ci
       - name: Prune orphaned test containers
         run: make test-clean

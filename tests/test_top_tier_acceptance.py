@@ -292,3 +292,49 @@ def test_download_progress_shows_percentage():
         assert "%" in logtxt, "progress.log should contain a % readout"
     finally:
         import shutil; shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_cli_download_top_tier_dry_run_detailed():
+    """Story: the REAL CLI `llama-ai --download-top-tier --dry` runs end-to-end and
+    prints a detailed, structured preview — the actual entry point, not just a helper.
+
+    Given  I run the real launcher binary with `--download-top-tier --dry --count 2`,
+    When   it discovers trending top-tier models that fit the actual card (real HF API,
+           no download because --dry),
+    Then   stdout must show the dynamic memory readout (RAM + headroom), a
+           `[dry] would download top N` marker, and for EACH candidate a row containing
+           its provider, filename, size, and tier folder — and it must NOT start a
+           server or download anything.
+    """
+    total = llama_ai.read_total_ram_bytes()
+    head = llama_ai.read_current_headroom_bytes(total)
+    # run the REAL binary via subprocess (the CLI entry point, real argv -> main).
+    # Pin a 48 GB card via LLAMA_RAM_BYTES so a top-tier model reliably fits on ANY
+    # host/CI-runner, exercising the ranked-preview branch (not the no-fit branch).
+    env = dict(os.environ)
+    env["LLAMA_RAM_BYTES"] = str(48 * 1024 ** 3)
+    out = subprocess.run([sys.executable, str(REPO / "scripts/llama_serve.py"),
+                          "--download-top-tier", "--dry", "--count", "2"],
+                         capture_output=True, text=True, timeout=180, env=env)
+    assert out.returncode == 0, f"dry run must exit 0; stderr:\n{out.stderr[-800:]}"
+    s = out.stdout
+    assert "detecting memory on the actual card" in s, s[-800:]
+    assert "total RAM" in s, "dry run must print the dynamic total-RAM readout"
+    assert "headroom" in s, "dry run must print the headroom readout"
+    assert "would download top" in s, f"must print '[dry] would download top N'; got:\n{s[-800:]}"
+    # --count 2 => up to 2 providers x per-provider(2) = up to 4 candidate rows
+    lines = [ln for ln in s.splitlines() if "->" in ln and ".gguf" in ln]
+    assert lines, f"dry run must list candidate rows with provider::file -> path; got:\n{s[-800:]}"
+    assert len(lines) <= 4, f"--count 2 with per-provider 2 => <=4 rows, got {len(lines)}"
+    for ln in lines[:2]:
+        assert "/" in ln, f"candidate row must show provider repo: {ln}"
+        assert ".gguf" in ln, f"candidate row must name the .gguf file: {ln}"
+        assert "GiB" in ln or "GB" in ln, f"candidate row must show size: {ln}"
+        assert ("48GB" in ln or "24GB" in ln or "16GB" in ln or "8GB" in ln), \
+            f"candidate row must show tier folder: {ln}"
+    assert "nothing was downloaded or served" in s or "nothing could be downloaded" in s, \
+        f"dry run must confirm nothing was downloaded; got:\n{s[-400:]}"
+    # --dry must NOT launch llama-server
+    assert "llama-server" not in out.stderr.lower(), "dry run must not spawn llama-server"
+    assert "==> " not in out.stderr.lower() or "llama-server" not in s, \
+        "dry run must not start a server"

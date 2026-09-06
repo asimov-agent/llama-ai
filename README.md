@@ -209,6 +209,7 @@ make test-install-host # verify the REAL host install: ~/bin/llama-ai + symlinks
 make test-health       # end-to-end CPU LLM check: downloads tiny model, answers "hi"
 make test-top-tier     # REAL acceptance (no mocks): live HF trending + fit gate + real download
 make test-top-tier-serve  # download a lightweight top-tier model, load llama-server, answer 'hi', check RAM
+make test-top-tier-cli-ci # REAL CLI dry-run in the CI container: llama-ai --download-top-tier --dry --count 2
 make download-test-model  # fetch Qwen2.5-0.5B into ~/models/Qwen/8GB (via `hf` CLI)
 make openspec-validate NAME=<change>   # validate an OpenSpec change
 make test-clean        # prune stopped orphaned test containers (always)

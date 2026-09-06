@@ -75,8 +75,13 @@
       retry (up to 3×, no batch abort on a single failure); `hf_download.py` uses
       `HF_XET_HIGH_PERFORMANCE=1` (hf-xet, never disabling it) and prints a live **0-100%**
       progress (size, MB/s, elapsed) to the terminal + `.progress.log`; completed models are never
-      re-fetched on re-run (idempotent). Covered by `test_discover_high_and_lower_quants_per_provider` +
-      `test_default_count_is_five` + unit dedupe/trending tests.
+      re-fetched on re-run (idempotent). The REAL CLI is exercised end-to-end:
+      `test_cli_download_top_tier_dry_run_detailed` runs `llama_serve.py --download-top-tier
+      --dry --count 2` as a subprocess and asserts the detailed ranked preview (dynamic RAM/
+      headroom readout, provider::file->tier rows, "nothing was downloaded", no llama-server
+      spawn); wired as `make test-top-tier-cli-ci` (container) + the CI `top-tier` job. Covered
+      by `test_discover_high_and_lower_quants_per_provider` + `test_default_count_is_five` +
+      unit dedupe/trending tests.
 - [x] 9g. Serve-after-download (A6) automated: `test_top_tier_serve.py` downloads a
       lightweight (0.5B) top-tier model for real, launches llama-server, waits /health,
       POSTs "hi", asserts a reply, and re-measures RAM to prove headroom remains. Wired

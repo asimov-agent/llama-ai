@@ -203,6 +203,12 @@ test-top-tier-serve: ## Download a lightweight top-tier model, load it, answer '
 test-top-tier-serve-ci: ## Serve test inside the test container (CI/CPU): download lightweight, load, 'hi', RAM.
 	$(TEST_RUN) python -m pytest tests/test_top_tier_serve.py -p no:cacheprovider -q -s -m acceptance
 
+test-top-tier-cli-ci: ## REAL CLI dry-run in the test container: llama-ai --download-top-tier --dry (no download/network writes)
+	# Run the ACTUAL launcher entry point end-to-end with --dry, verifying the real
+	# dispatch (main -> _main_download_top_tier), dynamic card readout, and the ranked
+	# preview — no download and no server start. Deterministic card via LLAMA_RAM_BYTES.
+	$(TEST_RUN) python -m pytest tests/test_top_tier_acceptance.py::test_cli_download_top_tier_dry_run_detailed -p no:cacheprovider -q -s -m acceptance
+
 test-health: ## End-to-end CPU health check: ensure model, then tiny model answers 'hi' (containerized)
 	$(TEST_RUN) sh -c 'python scripts/download_test_model.py && python -m pytest tests/test_health.py -p no:cacheprovider -q -s'
 
