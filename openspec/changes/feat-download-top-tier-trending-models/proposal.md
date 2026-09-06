@@ -24,10 +24,12 @@ llama-ai --download-top-tier --dry          # preview only
 
 **Selection = three gates.**
 - **Trending**: time-bounded HF `trendingScore` (`filter=gguf`); not lifetime downloads.
-- **Top-tier**: flagship-family allow-list + non-trivial quant (no sub-1B toys, no multi-file
-  shards, no vision projectors) AND **drops low-fidelity IQ1/IQ2/IQ3 quants** (an 8-11 GB 27B is
-  poor quality) AND **drops MTP/mtp-* companion heads** (multi-token-prediction aux files, not the
-  serviceable model).
+- **Top-tier**: flagship-family allow-list (`TOP_TIER_FAMILIES`: Qwen3, DeepSeek, Mistral, Llama,
+  Gemma, gpt-oss, Phi, QwQ, GLM, Olmo + trending additions Ornith/Qwopus/Qwythos/Tiel-Coder/
+  MiniMax/K2 so popular trending LLMs aren't dropped) + non-trivial quant (no sub-1B toys, no
+  multi-file shards, no vision projectors) AND **drops low-fidelity IQ1/IQ2/IQ3 quants** (an
+  8-11 GB 27B is poor quality) AND **drops MTP/mtp-* companion heads** (multi-token-prediction
+  aux files, not the serviceable model). Still excludes non-LLM repos (TTS, image/audio encoders).
 - **Fits (dynamic)**: total RAM read at runtime from the real card
   (`sysctl hw.memsize`/`/proc/meminfo`/`LLAMA_RAM_BYTES`), headroom from `vm_stat`
   (floor 3 GB, cap 45%). Accept iff `size_bytes + headroom + KV_reserve <= read_total_ram()`,

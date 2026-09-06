@@ -77,6 +77,14 @@ KV_QUANT = "q4_0"                           # K and V cache quant type
 TOP_TIER_FAMILIES = (
     "qwen3", "qwen", "deepseek", "mistral", "llama-3", "llama3",
     "gemma", "gpt-oss", "phi-4", "phi-3", "qwq", "glm", "olmo",
+    # additional trending LLM families observed in the live gguf trending query but
+    # wrongly dropped (they're real LLMs, not TTS/image/audio):
+    "ornith",          # ornith-ai/Ornith-1.5-{9B,35B-A3B}-GGUF (3.5M downloads, trend ~40)
+    "qwopus",          # Jackrong/Qwopus3.8-27B-Flash-GGUF (trend ~121)
+    "qwythos",         # empero-ai/Qwythos-9B (trend ~39)
+    "tiel-coder",      # peculiar-ragdoll/Tiel-Coder-35B-A3B-GGUF (trend ~87)
+    "minimax",         # unsloth/MiniMax-H3-GGUF (trend ~27)
+    "k2-", "mova",     # IFM/K2-Horizon-MoVA-36B-A4B-GGUF (trend ~74)
 )
 MIN_TOP_TIER_GB = 4.0          # below this the quant file is treated as a toy/small
 TIER_LIMITS_GB = ((48, "48GB"), (24, "24GB"), (16, "16GB"), (8, "8GB"))
@@ -473,7 +481,9 @@ def _trending_gguf_repos(limit=25):
             "likes": m.get("likes", 0),
             "trendingScore": m.get("trendingScore", 0),
         })
-    return out
+    # Guard against API order drift: ALWAYS rank trendingScore desc, top first.
+    # (We request sort=trendingScore&direction=-1 but never trust the wire order.)
+    return sorted(out, key=lambda r: r["trendingScore"], reverse=True)
 
 
 def _is_top_tier_repo(repo):

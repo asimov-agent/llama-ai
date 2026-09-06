@@ -615,3 +615,73 @@ def test_argparse_recognizes_all_top_tier_flags_with_defaults(monkeypatch):
     a = ap.parse_args(["--download-top-tier"])
     assert a.count == 5 and a.per_provider == 2 and a.min_trending_score == 0 \
         and a.list is False and a.dry is False and a.port == 11434
+
+
+def test_trending_gguf_repos_queries_rank_and_filters(monkeypatch):
+    """The LIVE trending-source function `_trending_gguf_repos`:
+    - queries HF with sort=trendingScore&direction=-1&filter=gguf
+    - KEEPS only top-tier-family repos (Qwen3/GLM/...), DROPS the rest
+    - fills downloads/likes/trendingScore per repo
+    - returns them ranked by trendingScore DESC (the live ranked table).
+    """
+    seen_urls = []
+
+    def fake_hf_get(url, timeout=30):
+        seen_urls.append(url)
+        assert "sort=trendingScore" in url and "direction=-1" in url and "filter=gguf" in url
+        return [
+            # (out of order on purpose -> must be re-ranked; one non-top-tier -> dropped)
+            {"id": "orcarouter/Qwen3.8-27B-Uncensored-GGUF", "downloads": 284000,
+             "likes": 722, "trendingScore": 123},
+            {"id": "some/podcast-clip-audio", "downloads": 999999, "likes": 999,  # non-top-tier
+             "trendingScore": 999},
+            {"id": "unsloth/Qwen3.8-27B-GGUF", "downloads": 10200000, "likes": 3526,
+             "trendingScore": 284},
+            {"id": "ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF", "downloads": 297000,
+             "likes": 354, "trendingScore": 320},
+        ]
+
+    monkeypatch.setattr(llama_ai, "_hf_get", fake_hf_get)
+    result = llama_ai._trending_gguf_repos(limit=25)
+    # exact descending trendingScore order (matches the live ranked table shape)
+    assert [r["trendingScore"] for r in result] == [320, 284, 123]
+    # popular trending LLMs in the broadened allow-list are KEPT (not dropped):
+    assert llama_ai._is_top_tier_repo("ornith-ai/Ornith-1.5-9B-GGUF") is True
+    assert llama_ai._is_top_tier_repo("Jackrong/Qwopus3.8-27B-Flash-GGUF") is True
+    assert llama_ai._is_top_tier_repo("IFM/K2-Horizon-MoVA-36B-A4B-GGUF") is True
+    assert llama_ai._is_top_tier_repo("peculiar-ragdoll/Tiel-Coder-35B-A3B-GGUF") is True
+    # non-LLM / TTS / image repos must stay DROPPED (the whole reason the list exists):
+    assert llama_ai._is_top_tier_repo("nvidia/parakeet-tdt-0.6b-v3") is False
+    assert llama_ai._is_top_tier_repo("ampixa/sanoTTS") is False
+    assert llama_ai._is_top_tier_repo("ponpoke/flux2-klein-9b-uncensored-text-encoder") is False
+    # the non-top-tier repo (podcast-clip-audio) is dropped
+    assert all("podcast" not in r["repo"] for r in result)
+    # each carries downloads/likes/trendingScore and is a top-tier family
+    for r in result:
+        assert r["repo"].split("/", 1)[0] in ("ISTA-DASLab", "unsloth", "orcarouter")
+        assert r["downloads"] > 0 and r["likes"] > 0
+    # the query hit HF with the trending sort
+    assert any("sort=trendingScore" in u for u in seen_urls)
+
+
+def test_repo_fit_classification_matches_table():
+    """The 'fits 48 GB?' classification from the ranked table: given a 48 GB card
+    (48 GiB total, ~3.6 GiB headroom, 1 GiB KV), a 29 GB Q8 repo fits ('yes'), a
+    split-shard/MTP-only repo can't form a single file ('check'), and a giant repo
+    like a 400 GB bf16 does NOT fit ('no')."""
+    total = 48 * 1024 ** 3
+    head = (3 * 1024 ** 3) * 6 // 5   # ~3.6 GiB like the live host
+    kv = 1024 ** 3
+
+    def fits_ok(size_gb):
+        return (int(size_gb * 1024 ** 3)) + head + kv <= total
+
+    # 'yes' — 29.3 GB Q8 of a 27B on the 48 GB card
+    assert fits_ok(29.3) is True
+    # 21.5 GB Q6 also yes
+    assert fits_ok(21.5) is True
+    # 'no' — ~400 GB flash/bf16 model
+    assert fits_ok(400) is False
+    # GPU budget boundary: 48 GiB - 3.6 - 1 ~ 43.4 GiB -> a 43 GB model barely, 44 doesn't
+    assert fits_ok(40) is True
+    assert fits_ok(45) is False

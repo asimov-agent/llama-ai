@@ -45,6 +45,13 @@
       non-shard files often are MTP). Tests: `test_discover_top_tier_high_and_lower_per_provider`
       (trending-first order) + `test_discover_drops_low_fidelity_iq_quants` +
       `test_discover_drops_mtp_companion_files`.
+- [x] 8e. **Broadened trending-family allow-list** (user: "why is ornith not part of top-tier
+      trending?"): `TOP_TIER_FAMILIES` gained Ornith/Qwopus/Qwythos/Tiel-Coder/MiniMax/K2 so
+      clearly-LLM trending models aren't dropped, while TTS/image/audio repos still are;
+      `_trending_gguf_repos` now also re-sorts by `trendingScore` desc defensively (never trusts
+      the wire order). Tests: `test_trending_gguf_repos_queries_rank_and_filters` (keeps Ornith/
+      Qwopus/K2/Tiel-Coder, drops nvidia/parakeet TTS + ampixa/sanoTTS + ponpoke/flux2 image) +
+      `test_repo_fit_classification_matches_table` (48 GB fit split: 29.3/21.5 fit, 400 no).
 - [x] 8d. **Metadata-verify the download** (user: "the right models that are about to get downloaded
       can be verified by its metadata"): `download_top_tier_candidate` now reads the downloaded file's
       GGUF header (`read_model_meta_fast` + full-reader fallback) and rejects a non-GGUF/corrupt/HTML

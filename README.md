@@ -167,10 +167,12 @@ How it decides "trending + top tier + fits":
 - **Trending** — a time-weighted Hugging Face popularity signal (`trendingScore`,
   `filter=gguf`), so you get what's hot *now*, not a lifetime download count.
 - **Top tier** — only flagship/large popular families (Qwen3, DeepSeek, Mistral, Llama,
-  Gemma, gpt-oss, Phi, QwQ, GLM, ...), and only non-trivial quant files (no sub‑1B toy
-  quants, no multi-file shards, no vision projectors) — plus it drops **low-fidelity
-  IQ1/IQ2/IQ3 quants** (an 8-11 GB "27B" is poor quality) and **MTP/mtp-* companion heads**
-  (multi-token-prediction aux files, not the serviceable model).
+  Gemma, gpt-oss, Phi, QwQ, GLM, Olmo, plus trending additions Ornith/Qwopus/Qwythos/
+  Tiel-Coder/MiniMax/K2 so popular trending LLMs aren't dropped), and only non-trivial
+  quant files (no sub‑1B toy quants, no multi-file shards, no vision projectors) — plus
+  it drops **low-fidelity IQ1/IQ2/IQ3 quants** (an 8-11 GB "27B" is poor quality) and
+  **MTP/mtp-* companion heads** (multi-token-prediction aux files, not the serviceable
+  model), and still excludes non-LLM repos (TTS, image/audio encoders).
 - **Fits with buffer** — the total memory comes from the **actual card** at runtime
   (`sysctl hw.memsize` on macOS, `/proc/meminfo` on Linux, or `LLAMA_RAM_BYTES`), with
   current-pressure headroom (`vm_stat`). Only models that leave a KV-cache reserve are
