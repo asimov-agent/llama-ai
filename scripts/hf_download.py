@@ -1,14 +1,22 @@
 #!/usr/bin/env python3
 """Download a GGUF into a tiered models folder with live progress + auto-resume/retry.
 
-Usage: hf_download.py <repo_id> <filename> <dest_dir> <label>
+Usage: hf_download.py <repo_id> <filename> <dest_dir> <label> [refresh]
+refresh: "1" -> ALWAYS consult the Hub (etag/hash) so a same-name file that was
+updated upstream (or a corrupt local copy) is re-fetched, not skipped. Leave a
+fully-fresh local file untouched (hf no-ops on matching etag).
 Reads HF_TOKEN from ~/.zshrc. Append progress to <dest_dir>/<label>.progress.log
-Uses HF_HUB_ENABLE_HF_TRANSFER=1 + HF_HUB_DISABLE_XET=1 for speed.
+Uses HF_XET_HIGH_PERFORMANCE=1 (hf-xet chunked parallel) for speed — never
+HF_HUB_DISABLE_XET (would force slow single-stream download).
 Auto-retries on connection drop (rc!=0 while final .gguf absent), resuming the partial.
 """
 import subprocess, sys, os, re, time, shutil
 
 repo, filename, dest, label = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+refresh = (sys.argv[5] if len(sys.argv) > 5 else "0") == "1"
+# Optional expected total bytes (for a 0-100% progress readout). If absent we query
+# the HF API for the file size.
+expected_bytes = int(sys.argv[6]) if len(sys.argv) > 6 and str(sys.argv[6]).isdigit() else None
 
 tok = None
 try:
@@ -23,8 +31,14 @@ log = os.path.join(dest, f"{label}.progress.log")
 env = dict(os.environ)
 if tok:
     env["HF_TOKEN"] = tok
-env["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
-env["HF_HUB_DISABLE_XET"] = "1"
+# Speed: hf-xet (chunked parallel transfer) is ON by default in huggingface_hub.
+# Enable its HIGH-PERFORMANCE mode (the modern flag; HF_HUB_ENABLE_HF_TRANSFER is
+# deprecated and no longer used), and never set HF_HUB_DISABLE_XET=1 (that forced
+# the slow single-stream path). A single large .gguf then downloads across many
+# parallel connections.
+env["HF_XET_HIGH_PERFORMANCE"] = "1"
+env.pop("HF_HUB_ENABLE_HF_TRANSFER", None)
+env.pop("HF_HUB_DISABLE_XET", None)
 
 HF_BIN = os.environ.get("HF_BIN") or shutil.which("hf")
 if not HF_BIN or not os.path.isfile(HF_BIN):
@@ -36,15 +50,52 @@ final_path = os.path.join(dest, filename)
 MAX_RETRY = 20
 
 def tree_bytes(path):
+    """Bytes of the CURRENT target file only (final + any live .incomplete partial).
+
+    Counts just the file this downloader is fetching — NOT the whole model dir — so
+    the percentage reflects only this model (resets to 0% for each new/next download)
+    and isn't inflated by sibling models already in the same provider tier folder.
+    """
     total = 0
-    for root, dirs, files in os.walk(path):
+    # the final file, if already fully placed
+    if os.path.isfile(final_path):
+        total += os.path.getsize(final_path)
+    # the in-progress partial (hf writes `<etag>.incomplete` under .cache)
+    for root, _, files in os.walk(os.path.join(path, ".cache"), topdown=True):
         for f in files:
-            if f.endswith(".lock") or "progress.log" in f:
-                continue
-            total += os.path.getsize(os.path.join(root, f))
+            if f.endswith(".incomplete"):
+                p = os.path.join(root, f)
+                if os.path.isfile(p):
+                    total += os.path.getsize(p)
     return total
 
+# ---------------------------------------------------------------------------
+# Resolve the total size so progress can report 0-100%.
+# ---------------------------------------------------------------------------
+def resolve_expected_bytes():
+    if expected_bytes and expected_bytes > 0:
+        return expected_bytes
+    # Query the HF model tree API for this file's size.
+    import json
+    import urllib.request
+    try:
+        url = f"https://huggingface.co/api/models/{repo}/tree/main?recursive=true"
+        req = urllib.request.Request(url, headers={"User-Agent": f"llama-ai/{label}"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            data = json.load(r)
+        for f in data:
+            if f.get("path", "").endswith(filename) and f.get("size"):
+                return int(f["size"])
+    except Exception:
+        pass
+    return None
+
+
+TOTAL_BYTES = resolve_expected_bytes()
+
+
 def write_log(msg):
+    os.makedirs(dest, exist_ok=True)   # ensure the log dir exists (e.g. after interruption)
     with open(log, "a") as lf:
         lf.write(msg + "\n")
 
@@ -53,9 +104,14 @@ write_log(f"MODE download {repo} :: {filename} -> {dest}\nSTART {time.ctime()} |
 t_total = time.time()
 attempt = 1
 while attempt <= MAX_RETRY:
-    if os.path.exists(final_path):
+    # WITHOUT refresh: a fully-present file is treated as done (fast path).
+    # WITH refresh: always run `hf download` — it etag/checks the Hub and no-ops
+    # fast if the local file's content hash still matches; if the file was
+    # UPDATED upstream (even same filename + same size), the etag differs and hf
+    # re-fetches just that file. A mere existence check would mask that update.
+    if (not refresh) and os.path.exists(final_path):
         break  # already done
-    write_log(f"\n=== attempt {attempt} ({time.ctime()}) ===")
+    write_log(f"\n=== attempt {attempt} ({time.ctime()}) {('refresh' if refresh else 'plain')} ===")
     t0 = time.time()
     proc = subprocess.Popen(cmd, env=env,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -67,8 +123,18 @@ while attempt <= MAX_RETRY:
         if now - last_log >= 5:
             dt = now - t0
             mbps = total / dt / 1e6 if dt > 0 else 0
-            write_log(f"[{time.strftime('%H:%M:%S')}] {total/1e9:.2f} GB so far | "
-                      f"{mbps:.1f} MB/s | attempt {attempt} | running {dt/60:.1f} min")
+            if TOTAL_BYTES:
+                pct = min(100.0, total / TOTAL_BYTES * 100)
+                line = (f"[{time.strftime('%H:%M:%S')}] {pct:5.1f}% "
+                        f"({total/1e9:6.2f}/{TOTAL_BYTES/1e9:.2f} GB) | "
+                        f"{mbps:.1f} MB/s | attempt {attempt} | running {dt/60:.1f} min")
+                write_log(line)
+                print(line, flush=True)   # live on the terminal too
+            else:
+                line = (f"[{time.strftime('%H:%M:%S')}] {total/1e9:6.2f} GB so far | "
+                        f"{mbps:.1f} MB/s | attempt {attempt} | running {dt/60:.1f} min")
+                write_log(line)
+                print(line, flush=True)   # live on the terminal too
             # stall watch (no growth ~60s)
             if total == last_bytes:
                 pass  # will accumulate stall detection below

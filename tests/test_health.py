@@ -101,11 +101,16 @@ def _chat(url: str, prompt: str = "hi") -> str | None:
     return data.get("choices", [{}])[0].get("message", {}).get("content")
 
 
-@pytest.mark.skipif(
-    not MODEL_FILE.is_file(),
-    reason="lightweight test model not present (~/models/Qwen/8GB/qwen2.5-0.5b-instruct-q4_0.gguf)",
-)
+# NO-SKIP: the health check must really run. If the lightweight model is missing
+# this FAILS loudly (never silently skips). The `health`/`test-health` make target
+# provisions it first via `make download-test-model` — run that, then this test.
 def test_health_endpoint_answers_hi():
+    # A missing model file is a loud failure, not a skip: the caller must run
+    # `make download-test-model` first (the `health` target does this itself).
+    assert MODEL_FILE.is_file(), (
+        f"lightweight test model missing at {MODEL_FILE}. Run 'make download-test-model' "
+        f"first — missing prerequisite is a hard failure, never a skip."
+    )
     # The launcher stops anything it finds on the chosen port, so a random high
     # port keeps the user's own server (11434) untouched.
     port = _pick_port()

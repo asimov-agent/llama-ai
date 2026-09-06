@@ -8,3 +8,8 @@
 #   make venv-install
 numpy
 gguf==0.19.0
+# The `hf` (huggingface_hub) CLI is the official HF downloader used by
+# `--download-top-tier`, scripts/hf_download.py, and download_test_model.py.
+# Installing it into the venv makes the launcher self-contained so top-tier
+# download works on any fresh machine regardless of what's in ~/models.
+huggingface_hub[cli]>=0.30

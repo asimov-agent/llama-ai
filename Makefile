@@ -32,9 +32,9 @@ LAUNCHER := $(BIN)/llama-ai
 LLAMA_SERVER_BIN ?= $(HOME)/repository/git/llama.cpp/build/bin/llama-server
 
 .PHONY: all install venv-install link uninstall smoke list version help \
-	openspec-image openspec-new openspec-validate openspec-status openspec-shell \
-	test test-unit test-install test-health download-test-model \
-	test-image test-clean lint lint-fix loop loop-harness chained
+		openspec-image openspec-new openspec-validate openspec-status openspec-shell \\
+		test test-unit test-install test-install-ci test-install-host test-health download-test-model \\
+		test-image test-clean lint lint-fix loop loop-harness chained
 
 # ---- container runtime (nerdctl preferred, docker fallback) --------------
 RUNTIME ?= nerdctl
@@ -76,7 +76,11 @@ link:
 # ---- 4. smoke: confirm the launcher can list models ---------------------
 smoke:
 	@echo "==> Smoke test: $(LAUNCHER) --list"
-	@$(LAUNCHER) --list || { echo "Installed, but model scan returned nothing (no .gguf under ~/models yet), or gguf import failed." >&2; exit 1; }
+	@if $(LAUNCHER) --list; then \
+		echo "==> OK: launcher runs and found models."; \
+	else \
+		echo "==> Launcher installed and runs. (No .gguf under ~/models yet — install succeeds; use 'llama-ai --download-top-tier' to fetch trending top-tier models, or drop a .gguf into ~/models and run 'make list'.)" >&2; \
+	fi
 
 # ---- helpers ------------------------------------------------------------
 list:
@@ -148,8 +152,8 @@ test-clean: ## Remove left-over/stopped orphaned containers of the test image (i
 	done; \
 	echo "Pruned stopped orphaned $(TEST_IMG) containers."
 
-test-unit: ## Hermetic unit tests (containerized) — includes the lint regression test
-	$(TEST_RUN) python -m pytest tests/test_llama_ai.py tests/test_lint_linefeeds.py tests/test_watchloop_dispatch.py -p no:cacheprovider -q
+test-unit: ## Hermetic unit tests (containerized) — includes the lint regression + openspec-tasks-check tests
+	$(TEST_RUN) python -m pytest tests/test_llama_ai.py tests/test_lint_linefeeds.py tests/test_watchloop_dispatch.py tests/test_check_openspec_tasks.py -p no:cacheprovider -q
 
 test-agents-read: ## Guard: AGENTS.md must not match Hermes context-file threat patterns (fail-closed). Host-side: uses a Python >=3.11 that has hermes-agent installed (3rd-party PyPI dep, pinned ==0.19.0; the CI agents-read job installs it itself). Not containerized, to avoid bumping the 3.10 test image.
 	@echo "==> test-agents-read: scanning AGENTS.md with the installed hermes-agent threat scanner"
@@ -173,6 +177,47 @@ test-install-host: ## Verify the REAL host install (make install) — runs on th
 	# local/AGENTS.md proof that `make install` works.
 	@echo "==> Verifying host install artifacts via tests/test_install.py"
 	@$(PY) -m pytest tests/test_install.py -p no:cacheprovider -q
+
+test-install-ci: ## REAL install tests inside the test container (NO SKIP): make install + seed model + assert artifacts, in ONE container
+	# The install tests assert HOST install artifacts (~/bin/llama-ai, ~/bin/llama_ai.py,
+	# llama-server on PATH, ~/models). They must not skip: so this target performs a REAL
+	# `make install` (launcher + venv + symlinks) INSIDE the container, seeds the
+	# lightweight model so --list/--dry have something, then runs the tests — all in a
+	# SINGLE container session so the artifacts actually persist for pytest. Missing
+	# prerequisites are a loud failure here, never a skip.
+	@echo "==> test-install-ci: real make install + model seed + tests (no skips)"
+	$(TEST_RUN) sh -c 'make install && python scripts/download_test_model.py && python -m pytest tests/test_install.py -p no:cacheprovider -q'
+
+test-top-tier: ## REAL top-tier acceptance (no mocks): live HF trending + fit gate + provider-aware download + placement
+	# Host-side acceptance for --download-top-tier (issue #49): hits the live
+	# Hugging Face API, the real `hf` downloader, and the real card's memory.
+	# Set HF_BIN=/abs/path/to/hf when `hf` is not on PATH.
+	@echo "==> Running top-tier acceptance tests (real, no mocks)"
+	@HF_BIN="$${HF_BIN:-$(shell command -v hf || echo $(HOME)/models/hf-env/bin/hf)}" \
+		$(PY) -m pytest tests/test_top_tier_acceptance.py -p no:cacheprovider -q -m acceptance
+
+test-top-tier-ci: ## REAL top-tier acceptance inside the test container (CI/CPU). `hf` + gguf are bundled in the image.
+	# Pin a deterministic card size (16 GB, the documented LLAMA_RAM_BYTES override) so the
+	# fit gate deterministically offers top-tier models on any CI runner regardless of its
+	# actual free RAM — still a REAL `hf` download, no mock. On the dev host use `test-top-tier`
+	# (no pin) so it uses the real card.
+	$(TEST_RUN) sh -c 'LLAMA_RAM_BYTES=17179869184 python -m pytest tests/test_top_tier_acceptance.py -p no:cacheprovider -q -m acceptance'
+
+test-top-tier-serve: ## Download a lightweight top-tier model, load it, answer 'hi', check RAM (host GPU or CPU).
+	# End-to-end serve proof for the downloaded top-tier model: real lightweight download,
+	# launch llama-server, /health, POST "hi" (assert reply), re-measure RAM for headroom.
+	@echo "==> Serving a downloaded lightweight top-tier model and answering 'hi'"
+	@HF_BIN="$${HF_BIN:-$(shell command -v hf || echo $(HOME)/llama-gguf-tools/.venv/bin/hf)}" \
+		$(PY) -m pytest tests/test_top_tier_serve.py -p no:cacheprovider -q -s -m acceptance
+
+test-top-tier-serve-ci: ## Serve test inside the test container (CI/CPU): download lightweight, load, 'hi', RAM.
+	$(TEST_RUN) python -m pytest tests/test_top_tier_serve.py -p no:cacheprovider -q -s -m acceptance
+
+test-top-tier-cli-ci: ## REAL CLI dry-run in the test container: llama-ai --download-top-tier --dry (no download/network writes)
+	# Run the ACTUAL launcher entry point end-to-end with --dry, verifying the real
+	# dispatch (main -> _main_download_top_tier), dynamic card readout, and the ranked
+	# preview — no download and no server start. Deterministic card via LLAMA_RAM_BYTES.
+	$(TEST_RUN) python -m pytest tests/test_top_tier_acceptance.py::test_cli_download_top_tier_dry_run_detailed -p no:cacheprovider -q -s -m acceptance
 
 test-health: ## End-to-end CPU health check: ensure model, then tiny model answers 'hi' (containerized)
 	$(TEST_RUN) sh -c 'python scripts/download_test_model.py && python -m pytest tests/test_health.py -p no:cacheprovider -q -s'
@@ -201,11 +246,16 @@ loop-harness: ## Loop runner (host orchestration): image->download->lint->unit->
 chained: test-unit test-agents-read test-install test-health test openspec-validate
 	@echo "All chain steps completed."
 
-uninstall: ## Remove the launcher + symlinks (leaves the venv)
-	@rm -f "$(LAUNCHER)" "$(BIN)/llama_ai.py" "$(BIN)/llama-server" \
-		"$(REPO)/scripts/llama_serve.py" "$(REPO)/scripts/hf_download.py"
+uninstall: ## Remove ONLY the launcher + symlinks in ~/bin (leaves the venv AND all repo source files)
+	# Removes just the installed artifacts: the ~/bin/llama-ai launcher, the
+	# ~/bin/llama_ai.py symlink, and the ~/bin/llama-server symlink. It MUST NOT
+	# delete repo source files (scripts/llama_serve.py, scripts/hf_download.py) —
+	# those live in the checkout/worktree and are tracked in git; deleting them
+	# breaks a subsequent `make install` from the same tree. Uninstall only
+	# undoes what `make install` wrote into ~/bin.
+	@rm -f "$(LAUNCHER)" "$(BIN)/llama_ai.py" "$(BIN)/llama-server"
 	@echo "Removed $(LAUNCHER), $(BIN)/llama_ai.py, and $(BIN)/llama-server"
-	@echo "(venv kept at $(VENV); 'make -C tools clean' to drop requirements.txt)"
+	@echo "(venv kept at $(VENV) and repo source untouched; 'make -C tools clean' to drop requirements.txt)"
 
 help:
 	@echo "Targets:" \

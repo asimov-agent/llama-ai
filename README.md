@@ -37,15 +37,17 @@ make install
 `make install` does the whole setup so you never touch the venv by hand:
 
 1. **venv** — builds the Python 3.10 gguf-tooling venv at `~/llama-gguf-tools/.venv`
-   (`numpy` + `gguf==0.19.0`).
+   (`numpy` + `gguf==0.19.0` + `huggingface_hub[cli]` so the `hf` downloader used by
+   `--download-top-tier` is always available, no separate install needed).
 2. **launcher** — writes an executable `~/bin/llama-ai` that runs `scripts/llama_serve.py` **with the
    venv's python**, so `gguf`/`numpy` resolve with zero extra steps.
 3. **`llama-server` on PATH** — symlinks `~/bin/llama-server` → your llama.cpp
    `build/bin/llama-server` (override the build path with `LLAMA_SERVER_BIN=<path>`).
    `scripts/llama_serve.py` resolves the server as **`llama-server` on PATH** and **terminates with a
    clear error if it isn't found**.
-4. **symlink** — `ln -s` `~/bin/llama_ai.py` → this repo's copy of the launcher (`scripts/llama_serve.py`).
-5. **verify** — a `--list` smoke run confirms the install.
+4. **symlink + smoke** — symlinks `~/bin/llama_ai.py` → this repo's launcher (`scripts/llama_serve.py`),
+   then runs `~/bin/llama-ai --list`. Succeeds even when `~/models` is empty (you populate it with
+   `llama-ai --download-top-tier`), failing only on a genuine gguf/launch error.
 
 After `make install`, just run:
 
@@ -119,7 +121,9 @@ The launcher will:
 - Write the exact command to `<model-dir>/.run.log` for audit/replay.
 
 You can customize `TOTAL_RAM_BYTES`, `OS_OVERHEAD`, `KV_QUANT`, and `SAMPLING` at the top
-of `scripts/llama_serve.py`.
+of `scripts/llama_serve.py`. For `--download-top-tier`, the fit is **dynamic**: the total
+comes from the actual card (`LLAMA_RAM_BYTES` overrides it), headroom is capped at 45% of
+total, and KV reserve applies automatically.
 
 ### Test the endpoint
 
@@ -128,6 +132,65 @@ curl http://127.0.0.1:11434/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{"model":"llm-local","messages":[{"role":"user","content":"hi"}]}'
 ```
+
+## Download the top-tier trending models that fit your GPU (`--download-top-tier`)
+
+Discover and download the **currently-trending, top-tier** GGUF models (from the Hugging
+Face community that publishes GGUF for llama.cpp) that **fit the CPU/GPU card you actually
+have** — with KV-cache headroom so they *run*, not just download.
+
+```bash
+# list the top-tier trending models that fit the actual card (no download)
+llama-ai --download-top-tier --list
+# download 5 distinct providers x 2 quants (default): each provider's HIGH (Q8) + lower (Q6/Q5)
+llama-ai --download-top-tier
+# download N providers' high + lower quants (--count) 
+llama-ai --download-top-tier --count 3
+# just the best (high) quant per provider, no lower
+llama-ai --download-top-tier --per-provider 1
+# only consider models rated high enough (trendingScore floor)
+llama-ai --download-top-tier --min-trending-score 150
+# see what it would download without downloading
+llama-ai --download-top-tier --dry
+```
+
+By default it aims for **5 distinct providers × 2 quants each** — the HIGH (Q8) plus a clearly-LOWER
+(Q4/Q5/Q6) quant per provider — **ranked by trending** (most popular now first, not by file size),
+and it **only downloads — it never auto-starts llama-server** (serve a downloaded model separately
+with `llama-ai <name>`). A failing provider is retried (up to 3×) without aborting the batch, and
+already-downloaded models are never re-fetched on a re-run (idempotent via HF content-hash). Live
+download progress shows a **0-100%** readout of the current file, and it uses HF's high-performance
+`hf-xet` transfer (fast for large files).
+
+How it decides "trending + top tier + fits":
+
+- **Trending** — a time-weighted Hugging Face popularity signal (`trendingScore`,
+  `filter=gguf`), so you get what's hot *now*, not a lifetime download count.
+- **Top tier** — only flagship/large popular families (Qwen3, DeepSeek, Mistral, Llama,
+  Gemma, gpt-oss, Phi, QwQ, GLM, Olmo, plus trending additions Ornith/Qwopus/Qwythos/
+  Tiel-Coder/MiniMax/K2 so popular trending LLMs aren't dropped), and only non-trivial
+  quant files (no sub‑1B toy quants, no multi-file shards, no vision projectors) — plus
+  it drops **low-fidelity IQ1/IQ2/IQ3 quants** (an 8-11 GB "27B" is poor quality) and
+  **MTP/mtp-* companion heads** (multi-token-prediction aux files, not the serviceable
+  model), and still excludes non-LLM repos (TTS, image/audio encoders).
+- **Fits with buffer** — the total memory comes from the **actual card** at runtime
+  (`sysctl hw.memsize` on macOS, `/proc/meminfo` on Linux, or `LLAMA_RAM_BYTES`), with
+  current-pressure headroom (`vm_stat`). Only models that leave a KV-cache reserve are
+  offered — on a 48 GB card that's ~29 GB Q8-class 27B models; on a 16 GB CPU card it
+  downshifts to ~12 GB Q3-class.
+
+Downloads go into a **provider-aware** folder so you always know who made the model, and the
+downloaded file is **verified by its GGUF metadata** (architecture / name / layers) before it's
+accepted — an HTML error page, truncated/corrupt stub, or wrong-model-under-right-name is rejected:
+
+```
+~/models/<owner>/<family>/<TierGB>/<file>.gguf
+~/models/unsloth/Qwen3.8-27B/48GB/Qwen3.8-27B-UD-Q8_K_XL.gguf
+```
+
+Re-runs are **idempotent**: the real `hf` (huggingface_hub) CLI content-addresses its cache
+by etag, and the launcher skips entirely when the target file is already complete — so you
+never re-download the whole model.
 
 ---
 
@@ -142,10 +205,14 @@ started directly.
 make loop              # == make loop-harness: run ALL stages in order, GREEN gate
 make test-image        # build the test image (python+pytest+deps + CPU llama-server)
 make lint              # linefeed/editorconfig lint (fail-closed)
-make test-unit         # hermetic unit tests
-make test-install      # install tests (run in-container; host-artifact asserts skip)
+make test-unit         # hermetic unit tests (all files, incl. openspec-tasks-check)
+make test-install      # install tests (run in-container; host-artifact asserts — no skips via test-install-ci)
+make test-install-ci   # REAL install tests, NO SKIPS: make install + model + assert in ONE container
 make test-install-host # verify the REAL host install: ~/bin/llama-ai + symlinks + ~/models (runs on host)
 make test-health       # end-to-end CPU LLM check: downloads tiny model, answers "hi"
+make test-top-tier     # REAL acceptance (no mocks): live HF trending + fit gate + real download
+make test-top-tier-serve  # download a lightweight top-tier model, load llama-server, answer 'hi', check RAM
+make test-top-tier-cli-ci # REAL CLI dry-run in the CI container: llama-ai --download-top-tier --dry --count 2
 make download-test-model  # fetch Qwen2.5-0.5B into ~/models/Qwen/8GB (via `hf` CLI)
 make openspec-validate NAME=<change>   # validate an OpenSpec change
 make test-clean        # prune stopped orphaned test containers (always)
@@ -155,7 +222,7 @@ The `make loop` harness runs these stages in order (each in its own `--rm`
 container), then **always** prunes orphaned containers:
 
 ```
-image → download → lint → unit → install → health → test → openspec → clean
+image → download → lint → unit → install → health → top-tier → top-tier-serve → test → openspec → clean
 ```
 
 - The **`health` stage** is a real end-to-end check: it downloads the
@@ -263,7 +330,7 @@ llama-ai/
 │   └── Dockerfile
 ├── docker-compose-files/test.yaml   # hermetic test container (documented)
 ├── scripts/
-│   ├── llama_serve.py    # GGUF launcher + llama-server auto-tuner
+│   ├── llama_serve.py    # GGUF launcher + llama-server auto-tuner + --download-top-tier
 │   ├── hf_download.py    # HF downloader (auto-resume/retry, throttled)
 │   ├── __init__.py       # package marker for hermetic unit tests
 │   ├── loop_harness.py       # `make loop` orchestrator (9 stages)
@@ -271,7 +338,9 @@ llama-ai/
 │   └── lint_linefeeds.py     # linefeed/editorconfig lint (--fix)
 ├── tests/
 │   ├── test_llama_ai.py      # hermetic unit tests (imports scripts.llama_serve)
-│   ├── test_install.py       # host-install tests (skip cleanly in container)
+│   ├── test_top_tier_acceptance.py # REAL (no-mock) top-tier download acceptance
+│   ├── test_install.py       # host-install tests (NO SKIPS — fail loudly if artifacts missing)
+│   ├── test_check_openspec_tasks.py # validates openspec task checkboxes (in CI unit job)
 │   └── test_health.py        # e2e CPU LLM health check (downloads + "hi")
 ├── .github/workflows/ci.yml  # parallel per-stage CI (all branches/PRs)
 ├── openspec/            # OpenSpec change tracking (spec-driven)

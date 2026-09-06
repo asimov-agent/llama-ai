@@ -76,6 +76,14 @@ Rules:
   - Treat any drift between the issue, the OpenSpec change, and the code/files as
     a workflow defect. The OpenSpec change is the referee: if there is a conflict,
     the code and the issue must conform to the OpenSpec change, not the reverse.
+  - **Alignment is a checked step, not an assumption (do it at every "done" claim).**
+    Before reporting an issue/PR as ready (and before `make loop` finalization),
+    *actively verify* the three artifacts agree: read the current issue body and diff
+    the key claims (goal, interface, requirements, acceptance) against
+    `proposal.md`/`spec.md`/`tasks.md`. Flag and fix any contradiction — do not assert
+    "aligned" without running the check. This applies to naming, requirements
+    (ADDED/MODIFIED/REM), constants/logic terms (e.g. dynamic-vs-hardcoded), and
+    acceptance wording.
   - When starting/resuming work, if the issue's goal and the OpenSpec change are
     out of sync, reconcile them FIRST (update whichever is behind to match the
     intended goal) before implementing.
@@ -422,6 +430,28 @@ the local host, so behaviour is byte-identical in both. Concretely:
 Anything that adds a second, differently-implemented path for the SAME resource
 (downloader, HEALTH check, model resolution) is a regression and will be
 rejected, even when it "would just work" as a fallback.
+
+### NO SKIPPED TESTS — every test must run and pass (mandatory, durable)
+
+A skipped test is a **loud FAILURE**, never a silent skip. There are NO
+`pytest.skip()`, `@pytest.mark.skipif`, or conditional-skip in the test suite —
+a test that cannot run because a prerequisite is missing (a llama-server binary,
+`~/models`, `make install` artifacts, network, etc.) FAILS the run loudly with a
+clear message telling you what to provision. This exists so a broken/absent
+prerequisite can **never silently pass CI** while the real behavior is unverified.
+
+Mechanics of the guarantee:
+- The conftest `pytest_report_teststatus`/`pytest_runtest_logreport` hooks turn any
+  skipped test into a failure in the exit code.
+- The test HARness provisions prerequisites so tests genuinely run:
+  - `make test-install-ci` performs a REAL `make install` + seeds a model, then runs
+    `tests/test_install.py` — all in ONE container, no skip.
+  - `make test-health` / `make test-top-tier-serve` download their model/server first.
+  - If you genuinely cannot provision a prerequisite (e.g. no GPU), you do NOT skip —
+    you run the CPU/container equivalent and report it as an explicit limitation.
+- If a prerequisite is structurally impossible to provide, the test must assert a
+  meaningful behavior that CAN run (e.g. the error message / CLI contract), never
+  `pytest.skip("needs X")`.
 
 ### README must always be kept in sync
 

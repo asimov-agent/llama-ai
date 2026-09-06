@@ -47,16 +47,18 @@ jobs:
         run: make test-clean
 
   # ------------------------------------------------------------------
-  # install: host install tests (make test-install) — skips cleanly in container
-  # ------------------------------------------------------------------
+  # install: REAL host-install tests (make test-install-ci) — performs a real
+  # `make install` + seeds a model + asserts the artifacts, all in ONE container.
+  # NO SKIPS: a missing prerequisite fails the job loudly, it never silently skips.
   install:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - name: Build test image
         run: make test-image
-      - name: make test-install
-        run: make test-install
+      - name: make test-install-ci (real install, no skips)
+        run: make test-install-ci
       - name: Prune orphaned test containers
         run: make test-clean
 
@@ -112,5 +114,27 @@ jobs:
         run: make test-image
       - name: make test-health (CPU LLM answers "hi")
         run: make test-health
+      - name: Prune orphaned test containers
+        run: make test-clean
+
+  # ------------------------------------------------------------------
+  # top-tier: REAL (no-mock) top-tier acceptance (issue #49) — live HF
+  # trending + dynamic fit gate + provider-aware placement + real `hf`
+  # download, containerized/CPU. Deterministic card size (16 GB) so any runner
+  # passes; no mock/skip.
+  # ------------------------------------------------------------------
+  top-tier:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: "Build test image (bundles hf + gguf + CPU llama-server)"
+        run: make test-image
+      - name: "make test-top-tier-ci (real acceptance: download, no mocks, CPU)"
+        run: make test-top-tier-ci
+      - name: "make test-top-tier-serve-ci (lightweight download + load + hi + RAM)"
+        run: make test-top-tier-serve-ci
+      - name: "REAL CLI dry run (llama-ai --download-top-tier --dry --count 2 in-container)"
+        run: make test-top-tier-cli-ci
       - name: Prune orphaned test containers
         run: make test-clean

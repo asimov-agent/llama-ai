@@ -50,6 +50,11 @@ STAGES = [
     ("install", ["make", "test-install-host"]),
     # end-to-end health: launch the tiny model, answer 'hi' on the endpoint
     ("health", ["make", "test-health"]),
+    # REAL top-tier acceptance (no mocks): live HF trending + provider-aware download
+    # + dynamic fit. Uses the real `hf` CLI + real card; idempotent on re-runs.
+    ("top-tier", ["make", "test-top-tier"]),
+    # REAL top-tier serve: download a lightweight model, load llama-server, "hi", RAM.
+    ("top-tier-serve", ["make", "test-top-tier-serve"]),
     # full fast suite
     ("test", ["make", "test"]),
     # openspec validate of the active (or given) change
