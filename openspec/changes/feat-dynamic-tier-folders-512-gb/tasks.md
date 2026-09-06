@@ -1,7 +1,8 @@
 # Tasks — feat-dynamic-tier-folders-512-gb
 
-- [x] 1. Introduce a growing tier ladder (e.g. `8,16,24,48,96,128,192,256,384,512,768,...`)
-      replacing the hardcoded `TIER_LIMITS_GB = (48,24,16,8)`.
+- [x] 1. Introduce a growing tier ladder (e.g. `1,2,4,8,16,24,48,96,128,192,256,384,512,768,...`)
+      replacing the hardcoded `TIER_LIMITS_GB = (48,24,16,8)` — extends DOWN to 1/2/4 GB
+      (truthful small/CPU-card tiers) and UP past 48 GB (big-card tiers).
 - [x] 2. Change `pick_tier_folder(size_bytes)` -> `pick_tier_folder(size_bytes, total_ram_bytes=None)`:
       available buckets = ladder entries ≤ total; chosen = smallest available ≥ size, else largest.
 - [x] 3. Thread `total_ram_bytes` through `discover_top_tier` -> `provider_dest_path` ->
