@@ -36,6 +36,12 @@
       `--count` = number of PROVIDERS, each yielding per_provider quants (so `--count 5` => up to
       10 models). `--per-provider` flag (default 2) controls it. Percentage progress counts ONLY the
       current file (resets to 0% per model, not inflated by siblings).
+- [x] 8c. **Top-tier TRENDING ranking** (user: "I want the top-tier models that is trending"):
+      order PROVIDERS by HF `trendingScore` desc (NOT by file size — a niche provider's biggest
+      file must not beat a genuinely trending one), still grouped high+lower per provider; and
+      DROP low-fidelity-only providers (IQ1/IQ2/IQ3 quants, e.g. an 8-11 GB 27B) so "no lower
+      models" holds even for a #1-trending repo. Tests: `test_discover_top_tier_high_and_lower_per_provider`
+      (trending-first order) + `test_discover_drops_low_fidelity_iq_quants`.
 - [x] 9. Acceptance tests, **REAL (no mocks, no skips)**
       (`tests/test_top_tier_acceptance.py`): live HF trending + dynamic card read +
       fit gate rejects OOM + provider-aware placement + real `hf` download and

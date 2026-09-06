@@ -403,19 +403,85 @@ def test_discover_top_tier_high_and_lower_per_provider(monkeypatch):
     monkeypatch.setattr(llama_ai, "_repo_gguf_files", fake_files)
     monkeypatch.setattr(llama_ai, "MIN_TOP_TIER_GB", 1.0)
 
-    # 2 providers x 2 quants (high+lower)
+    # 3 providers x 2 quants (high+lower), ordered by TRENDING (not by file size)
+    result = llama_ai.discover_top_tier(limit=6, total_ram_bytes=48 * 1024 ** 3,
+                                        headroom_bytes=3 * 1024 ** 3, min_trending_score=0,
+                                        per_provider=2)
+    # grouped per provider(repo), ordered by trendingScore desc, high->lower each
+    # Each repo appears with exactly its high+lower pair (per_provider=2).
+    entries = [(c["repo"], c["size_bytes"] // (1024 ** 3), c["trendingScore"]) for c in result]
+    assert len(entries) == 6, f"expected 6 (3 repos x 2 quants), got {entries}"
+    # repos are grouped (a repo's 2 quants adjacent) ...
+    repo_scores = [entries[i][2] for i in range(0, 6, 2)]
+    assert repo_scores == sorted(repo_scores, reverse=True), \
+        f"repos must be ordered by trendingScore desc (top-tier TRENDING): {repo_scores}"
+    # ... and each repo's pair is high -> lower with a clearly-lower 2nd quant
+    for i in range(0, 6, 2):
+        hi, lo = entries[i][1], entries[i + 1][1]
+        assert hi > lo, f"{entries[i][0]} must be high->lower: {hi}->{lo}"
+        assert (hi - lo) >= 0.25 * hi, f"{entries[i][0]} lower must be clearly lower"
+
+
+def test_discover_drops_low_fidelity_iq_quants(monkeypatch):
+    """\"no lower models\": a trending provider that only offers low-fidelity
+    IQ1/IQ2/IQ3 quants (e.g. an 8-11 GB quant of a 27B) must be skipped, even if it
+    is #1-trending — we want the TOP-TIER (high-fidelity) trending models."""
+    repos = [
+        {"repo": "ista/Qwen3.8-27B-GGUF", "downloads": 1, "likes": 1, "trendingScore": 999},
+        {"repo": "unsloth/Qwen3.8-27B-GGUF", "downloads": 1, "likes": 1, "trendingScore": 500},
+    ]
+
+    def fake_trending(limit=25):
+        return repos
+
+    def fake_files(repo):
+        if repo.startswith("ista"):
+            return [{"path": "model-IQ3_S.gguf", "size_bytes": 9 * 1024 ** 3, "size_gb": 9.0},
+                    {"path": "model-IQ2_XS.gguf", "size_bytes": 7 * 1024 ** 3, "size_gb": 7.0}]
+        return [{"path": "model-Q8_0.gguf", "size_bytes": 28 * 1024 ** 3, "size_gb": 28.0},
+                {"path": "model-Q6_K.gguf", "size_bytes": 21 * 1024 ** 3, "size_gb": 21.0}]
+
+    monkeypatch.setattr(llama_ai, "_trending_gguf_repos", fake_trending)
+    monkeypatch.setattr(llama_ai, "_repo_gguf_files", fake_files)
+    monkeypatch.setattr(llama_ai, "MIN_TOP_TIER_GB", 1.0)
+
     result = llama_ai.discover_top_tier(limit=4, total_ram_bytes=48 * 1024 ** 3,
                                         headroom_bytes=3 * 1024 ** 3, min_trending_score=0,
                                         per_provider=2)
-    # grouped per provider: both unsloth repos come before orcarouter's, high->lower each
-    providers = []
-    for c in result:
-        providers.append((c["repo"].split("/", 1)[0], c["size_bytes"] // (1024 ** 3)))
-    # two providers appear; each appears with exactly its high+lower pair
-    unsloth = [b for (o, b) in providers if o == "unsloth"]
-    assert unsloth[0] > unsloth[1], f"unsloth must be high->lower: {unsloth}"
-    assert (unsloth[0] - unsloth[1]) >= 0.25 * unsloth[0], f"lower must be clearly lower"
-    orca = [b for (o, b) in providers if o == "orcarouter"]
-    assert orca[0] > orca[1], "orcarouter must be high->lower"
-    assert (orca[0] - orca[1]) >= 0.25 * orca[0], "lower must be clearly lower"
-    assert len(providers) == 4, f"expected 4 (2 providers x 2 quants), got {providers}"
+    repos_out = [c["repo"] for c in result]
+    # the #1-trending ISP-DASLab-style repo (only IQ quants) must be DROPPED
+    assert not any(r.startswith("ista") for r in repos_out), \
+        f"low-fidelity-only provider must be dropped: {repos_out}"
+    assert any(r.startswith("unsloth") for r in repos_out), "high-fidelity provider must remain"
+    # and its quants must be Q8_0/Q6_K (real top-tier), not IQ
+    assert all("I_Q" not in c["filename"].upper() and not c["filename"].startswith("model-IQ")
+               for c in result), f"no low-fidelity quant may be selected: {repos_out}"
+
+
+def test_discover_drops_mtp_companion_files(monkeypatch):
+    """mtp-* files are multi-token-prediction COMPANION heads (e.g. an MTP/mtp-Q8_0
+    auxiliary file), NOT the serviceable model. A trending repo that only offers a
+    split model + mtp companions must not offer the mtp file as a 'top-tier' pick."""
+    repos = [{"repo": "unsloth/Qwen3.8-Flash-Next-GGUF", "downloads": 1, "likes": 1,
+              "trendingScore": 400}]
+
+    def fake_trending(limit=25):
+        return repos
+
+    def fake_files(repo):
+        return [
+            {"path": "MTP/mtp-Qwen3.8-Flash-Next-BF16.gguf", "size_bytes": 7 * 1024 ** 3,
+             "size_gb": 7.0},
+            {"path": "MTP/mtp-Qwen3.8-Flash-Next-Q8_0.gguf", "size_bytes": 4 * 1024 ** 3,
+             "size_gb": 4.0},
+        ]
+
+    monkeypatch.setattr(llama_ai, "_trending_gguf_repos", fake_trending)
+    monkeypatch.setattr(llama_ai, "_repo_gguf_files", fake_files)
+    monkeypatch.setattr(llama_ai, "MIN_TOP_TIER_GB", 1.0)
+
+    result = llama_ai.discover_top_tier(limit=4, total_ram_bytes=48 * 1024 ** 3,
+                                        headroom_bytes=3 * 1024 ** 3, min_trending_score=0,
+                                        per_provider=2)
+    assert result == [], "an MTP-companion-only repo must not produce any top-tier pick"
+    assert all("mtp-" not in c["filename"].lower() for c in result)

@@ -18,22 +18,27 @@ constants.
 WHEN a user runs `llama-ai --download-top-tier`, THEN the launcher queries a time-bounded HF
 trending signal (`sort=trendingScore`, `filter=gguf`), filters to flagship/large families
 (Qwen3/DeepSeek/Mistral/Llama/Gemma/gpt-oss/Phi/QwQ/GLM...), excludes non-trivial-toy quants
-(`MIN_TOP_TIER_GB`, no multi-file shards / vision projectors), applies the fit+buffer gate so
-only models that fit the machine's unified memory with KV-cache headroom are offered, and ranks
-them (highest-fidelity that fits first, then trendingScore).
+(`MIN_TOP_TIER_GB`, no multi-file shards / vision projectors) AND **drops low-fidelity
+IQ1/IQ2/IQ3 quants** (a 27B at ~8-11 GB is poor quality — "no lower models"), applies the
+fit+buffer gate so only models that fit the machine's unified memory with KV-cache headroom are
+offered. **Ranking is TRENDING-first**: providers are ordered by HF `trendingScore` (most
+popular now first), and each provider offers its HIGH quant plus a clearly-LOWER quant.
 
-**How many / how rated:** `--count N` (default 5) downloads the top N **distinct providers**'
-best top-tier model (one per owner, for variety of what's popular now); `--min-trending-score N`
-(default 0) sets a rating floor — only repos with HF `trendingScore >= N` are considered, so
-niche/unrated models don't show. `--list` prints the ranked candidates (repo, filename, size,
-trendingScore, tier) without downloading. Downloads are **batch-resilient**: any single provider's
-failure is retried (up to 3×) without aborting the batch, and already-completed downloads are
-never re-fetched (etag/refresh idempotent).
+**How many / how rated:** `--count N` (default 5) = number of **distinct providers**; each
+yields `--per-provider` (default **2**) quants — the best HIGH (Q8, highest fidelity that fits)
+plus a clearly-LOWER quant (~25% smaller, Q4/Q5/Q6) so both fit comfortably. So `--count 5` ⇒ up
+to 10 models (5 high + 5 lower). `--min-trending-score N` (default 0) sets a rating floor — only
+repos with HF `trendingScore >= N` are considered. `--list` prints the ranked candidates (repo,
+filename, size, trendingScore, tier) without downloading. Downloads are **batch-resilient**: any
+single provider's failure is retried (up to 3×) without aborting the batch, and
+already-completed downloads are never re-fetched (etag/refresh idempotent).
 
-#### Scenario: On the dynamic total (48 GB host), a 35B Q5_K_M (~24 GB) is offered; a 70B Q8
-(over the total minus headroom minus KV) and a 0.5B toy are not. `--count 5 --list` shows at most
-5 distinct-provider ranked picks; `--min-trending-score 250` drops any pick below a trendingScore
-of 250. A download batch with one failing provider still completes the others, then retries the failed one.
+#### Scenario: On the dynamic total (48 GB host), the #1-trending provider offering only IQ2/IQ3
+#### (8-11 GB) is skipped, and the top provider ordering follows trendingScore (e.g. unsloth 281
+#### before a 40-trending 35B). With `--count 5` (per_provider 2), up to 10 picks surface across 5
+#### providers, each a high (Q8) + lower (Q6/Q5) pair. `--min-trending-score 250` drops any pick
+#### below 250. A download batch with one failing provider still completes the others, then retries
+#### the failed one.
 
 ### Requirement: A2 — Dynamic memory detection + fit + buffer gate
 WHEN judging fit, THEN it reads the machine's real memory at runtime, not a fixed size, leaving

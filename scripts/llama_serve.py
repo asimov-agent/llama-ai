@@ -24,6 +24,7 @@ Usage:
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -548,11 +549,20 @@ def discover_top_tier(limit=10, total_ram_bytes=None, headroom_bytes=None,
         except SystemExit:
             return []
         return sorted(
-            [f for f in files if f["size_gb"] >= MIN_TOP_TIER_GB
+            [f for f in files
+             # top-tier: real model file, big enough to be non-trivial
+             if f["size_gb"] >= MIN_TOP_TIER_GB
              and not os.path.basename(f["path"]).startswith(("mmproj", "Qwen_VL"))
              and "-multi-of-" not in os.path.basename(f["path"])
              and "-00001-of-" not in os.path.basename(f["path"])
-             and "0000" not in os.path.basename(f["path"])],
+             and "0000" not in os.path.basename(f["path"])
+             # MTP/mtp-* files are multi-token-prediction COMPANION heads, not the
+             # main serviceable model — never offer them as a "top-tier" pick.
+             and "mtp-" not in os.path.basename(f["path"]).lower()
+             # "no lower models": skip low-fidelity IQ1/IQ2/IQ3 quants even when a
+             # trending provider only offers those (a 27B at ~8-11 GB is poor quality).
+             and not re.search(r"(?:-|_)(IQ[123]_|IQ[12]XS|IQ[123][0-9])", os.path.basename(f["path"]), re.I)
+             ],
             key=lambda f: f["size_gb"], reverse=True,
         )
 
@@ -594,15 +604,17 @@ def discover_top_tier(limit=10, total_ram_bytes=None, headroom_bytes=None,
                 "dest_path": provider_dest_path(repo, os.path.basename(chosen["path"]),
                                                 chosen["size_bytes"]),
             })
-    # Rank so a provider's high + lower quants stay together (group by provider),
-    # ordered by the provider's best quality then trending; cut to `limit` total.
-    # This yields "Q8 + lower quant(s) from each provider" rather than all-Q8 picks.
+    # Rank so a provider's high + lower quants stay together (group by provider).
+    # Order PROVIDERS by what's TRENDING now (highest trendingScore first) — this is
+    # "top-tier trending": the most popular models right now surface first, each with
+    # its high + lower quant. (NOT by file size, which would surface the biggest file
+    # of a niche provider over a genuinely trending one.)
     cands.sort(key=lambda c: (c["repo"], -c["size_gb"]))              # group by provider, high first
     providers = {}
     for c in cands:
         providers.setdefault(c["repo"], []).append(c)
     ordered = []
-    for repo in sorted(providers, key=lambda r: -providers[r][0]["size_gb"]):
+    for repo in sorted(providers, key=lambda r: -providers[r][0]["trendingScore"]):
         ordered.extend(providers[repo])
     return ordered[:limit]
 
