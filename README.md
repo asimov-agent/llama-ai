@@ -168,14 +168,18 @@ How it decides "trending + top tier + fits":
   `filter=gguf`), so you get what's hot *now*, not a lifetime download count.
 - **Top tier** — only flagship/large popular families (Qwen3, DeepSeek, Mistral, Llama,
   Gemma, gpt-oss, Phi, QwQ, GLM, ...), and only non-trivial quant files (no sub‑1B toy
-  quants, no multi-file shards, no vision projectors).
+  quants, no multi-file shards, no vision projectors) — plus it drops **low-fidelity
+  IQ1/IQ2/IQ3 quants** (an 8-11 GB "27B" is poor quality) and **MTP/mtp-* companion heads**
+  (multi-token-prediction aux files, not the serviceable model).
 - **Fits with buffer** — the total memory comes from the **actual card** at runtime
   (`sysctl hw.memsize` on macOS, `/proc/meminfo` on Linux, or `LLAMA_RAM_BYTES`), with
   current-pressure headroom (`vm_stat`). Only models that leave a KV-cache reserve are
   offered — on a 48 GB card that's ~29 GB Q8-class 27B models; on a 16 GB CPU card it
   downshifts to ~12 GB Q3-class.
 
-Downloads go into a **provider-aware** folder so you always know who made the model:
+Downloads go into a **provider-aware** folder so you always know who made the model, and the
+downloaded file is **verified by its GGUF metadata** (architecture / name / layers) before it's
+accepted — an HTML error page, truncated/corrupt stub, or wrong-model-under-right-name is rejected:
 
 ```
 ~/models/<owner>/<family>/<TierGB>/<file>.gguf

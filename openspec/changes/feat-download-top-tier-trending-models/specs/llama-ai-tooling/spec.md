@@ -19,7 +19,8 @@ WHEN a user runs `llama-ai --download-top-tier`, THEN the launcher queries a tim
 trending signal (`sort=trendingScore`, `filter=gguf`), filters to flagship/large families
 (Qwen3/DeepSeek/Mistral/Llama/Gemma/gpt-oss/Phi/QwQ/GLM...), excludes non-trivial-toy quants
 (`MIN_TOP_TIER_GB`, no multi-file shards / vision projectors) AND **drops low-fidelity
-IQ1/IQ2/IQ3 quants** (a 27B at ~8-11 GB is poor quality — "no lower models"), applies the
+IQ1/IQ2/IQ3 quants** (a 27B at ~8-11 GB is poor quality — "no lower models") AND **drops
+MTP/mtp-* companion heads** (multi-token-prediction aux files, not the serviceable model).
 fit+buffer gate so only models that fit the machine's unified memory with KV-cache headroom are
 offered. **Ranking is TRENDING-first**: providers are ordered by HF `trendingScore` (most
 popular now first), and each provider offers its HIGH quant plus a clearly-LOWER quant.

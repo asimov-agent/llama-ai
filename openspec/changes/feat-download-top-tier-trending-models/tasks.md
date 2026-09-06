@@ -40,8 +40,11 @@
       order PROVIDERS by HF `trendingScore` desc (NOT by file size — a niche provider's biggest
       file must not beat a genuinely trending one), still grouped high+lower per provider; and
       DROP low-fidelity-only providers (IQ1/IQ2/IQ3 quants, e.g. an 8-11 GB 27B) so "no lower
-      models" holds even for a #1-trending repo. Tests: `test_discover_top_tier_high_and_lower_per_provider`
-      (trending-first order) + `test_discover_drops_low_fidelity_iq_quants`.
+      models" holds even for a #1-trending repo, and DROP MTP/mtp-* companion heads (MTP =
+      multi-token-prediction aux files, not the serviceable model — a split-shard repo's only
+      non-shard files often are MTP). Tests: `test_discover_top_tier_high_and_lower_per_provider`
+      (trending-first order) + `test_discover_drops_low_fidelity_iq_quants` +
+      `test_discover_drops_mtp_companion_files`.
 - [x] 8d. **Metadata-verify the download** (user: "the right models that are about to get downloaded
       can be verified by its metadata"): `download_top_tier_candidate` now reads the downloaded file's
       GGUF header (`read_model_meta_fast` + full-reader fallback) and rejects a non-GGUF/corrupt/HTML
