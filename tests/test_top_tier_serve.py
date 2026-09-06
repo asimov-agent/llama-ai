@@ -52,13 +52,14 @@ def _resolve_model_file(tmp_root) -> str:
     """Download the lightweight top-tier model for real (idempotent) into tmp_root."""
     _real_hf()
     real = next(f for f in llama_ai._repo_gguf_files(REPO_ID) if f["path"] == FILENAME)
+    tier = llama_ai.pick_tier_folder(real["size_bytes"], 16 * 1024 ** 3)  # small-model tier
     cand = {
         "repo": REPO_ID,
         "filename": FILENAME,
         "size_bytes": real["size_bytes"],
         "size_gb": real["size_gb"],
-        "tier_folder": "8GB",
-        "dest_path": f"{tmp_root}/Qwen/Qwen2.5-0.5B-Instruct-GGUF/8GB/{FILENAME}",
+        "tier_folder": tier,
+        "dest_path": f"{tmp_root}/Qwen/Qwen2.5-0.5B-Instruct-GGUF/{tier}/{FILENAME}",
     }
     final = llama_ai.download_top_tier_candidate(dict(cand), models_root=tmp_root)
     assert Path(final).is_file(), f"downloaded model missing: {final}"

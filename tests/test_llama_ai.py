@@ -685,3 +685,273 @@ def test_repo_fit_classification_matches_table():
     # GPU budget boundary: 48 GiB - 3.6 - 1 ~ 43.4 GiB -> a 43 GB model barely, 44 doesn't
     assert fits_ok(40) is True
     assert fits_ok(45) is False
+
+
+def test_pick_tier_folder_small_card_unchanged():
+    """A 48 GB card keeps the mid/large buckets 16/24/48; the small tiers (1/2/4)
+    are added below 8 so small models get truthful folders, not a catch-all 8GB."""
+    _48 = 48 * 1024 ** 3
+    # new small tiers (down-extension) are truthful
+    assert llama_ai.pick_tier_folder(int(0.43 * 1024 ** 3), _48) == "1GB"
+    assert llama_ai.pick_tier_folder(int(7 * 1024 ** 3), _48) == "8GB"
+    # mid/large buckets unchanged
+    assert llama_ai.pick_tier_folder(int(15 * 1024 ** 3), _48) == "16GB"
+    assert llama_ai.pick_tier_folder(int(22 * 1024 ** 3), _48) == "24GB"
+    assert llama_ai.pick_tier_folder(int(29 * 1024 ** 3), _48) == "48GB"
+    assert llama_ai.pick_tier_folder(int(47 * 1024 ** 3), _48) == "48GB"
+
+
+def test_pick_tier_folder_big_card_gets_truthful_tiers():
+    """On a 512 GB card a large model is labelled by a large tier, NEVER 48GB/."""
+    _512 = 512 * 1024 ** 3
+    # small/mid models still use the small buckets on the big card
+    assert llama_ai.pick_tier_folder(int(29 * 1024 ** 3), _512) == "48GB"
+    assert llama_ai.pick_tier_folder(int(7 * 1024 ** 3), _512) == "8GB"
+    # large models get tiers that grow past 48
+    assert llama_ai.pick_tier_folder(int(60 * 1024 ** 3), _512) == "96GB"
+    assert llama_ai.pick_tier_folder(int(100 * 1024 ** 3), _512) == "128GB"
+    assert llama_ai.pick_tier_folder(int(256 * 1024 ** 3), _512) == "256GB"
+    assert llama_ai.pick_tier_folder(int(400 * 1024 ** 3), _512) == "512GB"
+    assert llama_ai.pick_tier_folder(int(512 * 1024 ** 3), _512) == "512GB"
+    # a model bigger than the card falls back to the largest available bucket
+    assert "48GB" != llama_ai.pick_tier_folder(int(400 * 1024 ** 3), _512)
+    assert llama_ai.pick_tier_folder(int(700 * 1024 ** 3), _512) == "512GB"
+
+
+def test_pick_tier_folder_deterministic_with_total_argument():
+    """Passing total_ram_bytes makes placement independent of the runner's card."""
+    _512 = 512 * 1024 ** 3
+    _48 = 48 * 1024 ** 3
+    # same 60 GB model, two cards -> two different truthful tiers
+    assert llama_ai.pick_tier_folder(int(60 * 1024 ** 3), _48) == "48GB"
+    assert llama_ai.pick_tier_folder(int(60 * 1024 ** 3), _512) == "96GB"
+
+
+def test_discover_top_tier_offers_and_places_large_model_on_big_card(monkeypatch):
+    """On a 512 GB card a 400 GB trending model IS offered (fit gate passes) and its
+    tier_folder is a large tier (512GB/), never misleadingly 48GB/ (issue #51)."""
+    repo = "unsloth/Qwen4-400B-GGUF"
+    files_by_repo = {
+        repo: [  # a 400 GB bf16 + a 200 GB lower quant, both only fit a big card
+            {"path": "model-BF16.gguf", "size_bytes": 400 * 1024 ** 3, "size_gb": 400.0},
+            {"path": "model-Q8_0.gguf", "size_bytes": 200 * 1024 ** 3, "size_gb": 200.0},
+        ],
+    }
+
+    def fake_trending(limit=25):
+        return [{"repo": repo, "downloads": 1000, "likes": 100, "trendingScore": 500}]
+
+    def fake_files(r):
+        return files_by_repo[r]
+
+    monkeypatch.setattr(llama_ai, "_trending_gguf_repos", fake_trending)
+    monkeypatch.setattr(llama_ai, "_repo_gguf_files", fake_files)
+    monkeypatch.setattr(llama_ai, "MIN_TOP_TIER_GB", 1.0)
+
+    _512 = 512 * 1024 ** 3
+    _1 = 1024 ** 3
+    result = llama_ai.discover_top_tier(limit=4, total_ram_bytes=_512,
+                                        headroom_bytes=_1, min_trending_score=0,
+                                        per_provider=2)
+    # both quants are offered (each fits 512 GB with the 1 GiB headroom)
+    assert len(result) == 2, f"expected 2 candidates on 512 GB card, got {len(result)}"
+    tiers = [c["tier_folder"] for c in result]
+    assert "512GB" in tiers, f"the 400 GB model must land in a big tier, got {tiers}"
+    assert all(t != "48GB" for t in tiers), f"big models must never be 48GB/, got {tiers}"
+    # 400 GB -> 512GB/ ; 200 GB -> 256GB/ (next available bucket >= 200)
+    assert result[0]["size_gb"] == 400.0 and result[0]["tier_folder"] == "512GB"
+    assert result[1]["size_gb"] == 200.0 and result[1]["tier_folder"] == "256GB"
+
+
+# ---------------------------------------------------------------------------
+# FULL VRAM-parameterized placement: assume a specific GPU VRAM and verify each
+# mocked model lands in the folder for the card it FITS (issue #51).
+# For every card size in the ladder and a sweep of model sizes, the model's
+# dest_path/<TierGB> must equal the smallest available bucket >= its size.
+# ---------------------------------------------------------------------------
+def _expected_tier(model_gb, card_gb):
+    """Reference impl: smallest TIER_LADDER_GB entry <= card_gb (available buckets),
+    and within those the smallest bucket >= model_gb, else the largest."""
+    avail = [b for b in llama_ai.TIER_LADDER_GB if b <= card_gb]
+    assert avail, "card too small for any bucket"
+    for b in avail:
+        if model_gb <= b:
+            return f"{b}GB"
+    return f"{avail[-1]}GB"
+
+
+def test_placement_parametrized_over_all_card_sizes():
+    """Every ladder card size x a model sweep -> correct TierGB folder (full dest_path)."""
+    ALL_LADDER = llama_ai.TIER_LADDER_GB
+    # one representative model per tier (fits comfortably on cards >= that tier)
+    model_sizes_gb = [5, 12, 20, 29, 60, 100, 200, 400, 500, 1000]
+    for card_gb in ALL_LADDER:
+        total = int(card_gb * (1024 ** 3))
+        for mgb in model_sizes_gb:
+            want = _expected_tier(mgb, card_gb)
+            got = llama_ai.pick_tier_folder(int(mgb * 1024 ** 3), total)
+            assert got == want, (
+                f"{mgb} GB model on {card_gb} GB card: expected {want}, got {got}")
+
+            # also verify the full placement path embeds the same tier
+            p = llama_ai.provider_dest_path("unsloth/X-GGUF", "x.gguf",
+                                            int(mgb * 1024 ** 3), models_root="/m",
+                                            total_ram_bytes=total)
+            assert f"/{want}/x.gguf" in p, (
+                f"{mgb} GB model on {card_gb} GB card dest_path {p} missing tier {want}")
+
+
+def test_placement_fit_gate_and_folder_agree(monkeypatch):
+    """The fit gate (eligibility) and the tier folder (placement) must agree on the
+    same assumed VRAM: a model with size+headroom+KV <= card IS offered AND its
+    folder says it fits; a model that can't fit is NOT offered at all."""
+    card_gb = 512
+    total = int(card_gb * 1024 ** 3)
+    head = 4 * 1024 ** 3
+    kv = 1024 ** 3
+
+    repo = "unsloth/Big-GGUF"
+    sizes = [40, 400]  # 40 GB fits any card; 400 GB only fits >=512
+
+    def fake_trending(limit=25):
+        return [{"repo": repo, "downloads": 1, "likes": 1, "trendingScore": 900}]
+
+    def fake_files(r):
+        return [{"path": f"m{s}.gguf", "size_bytes": int(s * 1024 ** 3), "size_gb": s}
+                for s in sizes]
+
+    monkeypatch.setattr(llama_ai, "_trending_gguf_repos", fake_trending)
+    monkeypatch.setattr(llama_ai, "_repo_gguf_files", fake_files)
+    monkeypatch.setattr(llama_ai, "MIN_TOP_TIER_GB", 1.0)
+
+    # headroom_bytes is passed separately; the gate uses size+head+kv <= total
+    result = llama_ai.discover_top_tier(limit=10, total_ram_bytes=total,
+                                        headroom_bytes=head, min_trending_score=0,
+                                        per_provider=5)
+    placed = {c["size_gb"]: c["tier_folder"] for c in result}
+    # 40 GB fits 512 GB card comfortably -> offered, tier 48GB (smallest >= 40)
+    # 400 GB fits 512 GB card (400+4+1=405 <=512) -> offered, tier 512GB
+    assert set(placed) == {40, 400}, f"expected both to be offered, got {placed}"
+    assert placed[40] == "48GB" and placed[400] == "512GB"
+
+    # Now the SAME model on a 48 GB card: 400 GB does NOT fit -> not offered; 40 fits.
+    total48 = 48 * 1024 ** 3
+    result48 = llama_ai.discover_top_tier(limit=10, total_ram_bytes=total48,
+                                          headroom_bytes=head, min_trending_score=0,
+                                          per_provider=2)
+    placed48 = {c["size_gb"]: c["tier_folder"] for c in result48}
+    assert 40 in placed48 and 400 not in placed48, (
+        f"on 48 GB card only 40 GB offered, got {placed48}")
+
+
+# ---------------------------------------------------------------------------
+# EDGE-CASE MOCK-DOWNLOAD PLACEMENT (issue #51, user: "mock the card size, mock
+# the downloads, real asserts the mocked GGUF lands in the RIGHT directory").
+# Drives the REAL discover_top_tier (mock the model list), then MOCKS the actual
+# download by writing the candidate into its discovered dest_path, and asserts the
+# real file is in the correct tier folder — for card sizes 512/256/128/96/64/48
+# and the tiny 32/16/8/2 GB edge cases.
+# ---------------------------------------------------------------------------
+def _mock_discovery(monkeypatch, repos_files, min_gb=4.0):
+    """Install fake trending + file-list so discover_top_tier runs hermetically."""
+    # repos_files: {repo: {"trend": int, "files": [(name, size_gb), ...]}}
+    def fake_trending(limit=25):
+        out = []
+        for rid, info in repos_files.items():
+            out.append({"repo": rid, "downloads": 1000, "likes": 100,
+                        "trendingScore": info["trend"]})
+        out.sort(key=lambda r: -r["trendingScore"])
+        return out
+
+    def fake_files(repo):
+        return [{"path": name, "size_bytes": int(gb * 1024 ** 3), "size_gb": gb}
+                for (name, gb) in repos_files[repo]["files"]]
+
+    monkeypatch.setattr(llama_ai, "_trending_gguf_repos", fake_trending)
+    monkeypatch.setattr(llama_ai, "_repo_gguf_files", fake_files)
+    monkeypatch.setattr(llama_ai, "MIN_TOP_TIER_GB", min_gb)
+
+
+def _mock_download_write_stub(monkeypatch, tmp_path):
+    """Replace download_top_tier_candidate with a stub that materializes the
+    candidate into its own dest_path (a mock of the real hf download), recording
+    the files it 'downloaded'."""
+    written = []
+
+    def fake_download(cand, models_root=None):
+        dest = cand["dest_path"]
+        p = Path(dest)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"MOCKGGUF\x00" * 16)  # small stub — placement is what we assert
+        written.append(str(p))
+        return str(p)
+
+    monkeypatch.setattr(llama_ai, "download_top_tier_candidate", fake_download)
+    return written
+
+
+def test_mock_download_places_each_model_in_right_tier_dir(tmp_path, monkeypatch):
+    """Story: mock the card size + mock the downloads, assert each mocked GGUF lands
+    in the folder for the card it fits, across the edge-case card sizes."""
+    G = 1024 ** 3
+    # 5 trending providers, each a realistic model spanning large -> small.
+    repos_files = {
+        "unsloth/Qwen3.8-27B-GGUF":   {"trend": 281, "files": [("q8.gguf", 29.0), ("q6.gguf", 21.5)]},
+        "DavidAU/Qwen3.8-27B-GGUF":   {"trend": 221, "files": [("q8.gguf", 27.7), ("q5.gguf", 19.3)]},
+        "HauhauCS/Qwen3.8-27B-GGUF":  {"trend": 170, "files": [("q8.gguf", 29.3), ("q5.gguf", 18.8)]},
+        "OBLITERATUS/Qwen3.8-27B-GGUF": {"trend": 129, "files": [("q8.gguf", 27.1), ("q5.gguf", 18.2)]},
+        "orcarouter/Qwen3.8-27B-GGUF":{"trend": 114, "files": [("q8.gguf", 27.1), ("q5.gguf", 18.2)]},
+    }
+    _mock_discovery(monkeypatch, repos_files)
+    written = _mock_download_write_stub(monkeypatch, tmp_path)
+
+    head = 3 * G  # floor headroom
+    # card sizes: the edge cases — big, medium, small
+    for card_gb in [512, 256, 128, 96, 64, 48, 32, 16, 8, 2]:
+        total = int(card_gb * G)
+        result = llama_ai.discover_top_tier(limit=5, total_ram_bytes=total,
+                                            headroom_bytes=head, min_trending_score=0,
+                                            per_provider=2)
+        # mock-download every discovered candidate
+        for cand in result:
+            ll = llama_ai.download_top_tier_candidate(cand, models_root=str(tmp_path))
+            # the mock actually wrote the file at the right place
+            assert Path(ll).is_file(), f"mocked download missing: {ll}"
+            # the dest_path's TIER folder == the tier the card-fits logic picked
+            tier = cand["tier_folder"]
+            assert f"/{tier}/" in ll, (
+                f"{card_gb} GB card: file {ll} missing tier folder {tier}")
+        # (download_top_tier_candidate is stubbed, so 'written' list isn't needed here)
+
+
+def test_mock_download_picks_top5_by_trend_and_places(tmp_path, monkeypatch):
+    """Story: the top-5 trending providers get mock-downloaded into the right tier dir;
+    assert the top-5 BY TREND (not by file size) are the ones actually placed (issue #49/#51)."""
+    G = 1024 ** 3
+    repos_files = {
+        "low_trend/Big":  {"trend": 10,  "files": [("q8.gguf", 400.0)]},
+        "high_trend/Small":{"trend": 999, "files": [("q8.gguf", 10.0)]},
+        "med/Both":       {"trend": 500, "files": [("q8.gguf", 100.0), ("q4.gguf", 50.0)]},
+    }
+    _mock_discovery(monkeypatch, repos_files, min_gb=1.0)
+    _mock_download_write_stub(monkeypatch, tmp_path)
+
+    total = 512 * G
+    head = 3 * G
+    result = llama_ai.discover_top_tier(limit=5, total_ram_bytes=total,
+                                        headroom_bytes=head, min_trending_score=0,
+                                        per_provider=1)
+    # RANKING is by TRENDING (999 > 500 > 10), not by file size (400 > 100 > 10):
+    # the trend-999 repo MUST be first. med/Both (500) contributes its high+lower
+    # (2 rows under per_provider=2 logic), then low_trend/Big (10) LAST.
+    placed_repos = [c["repo"] for c in result]
+    assert placed_repos[0] == "high_trend/Small", (
+        f"trend 999 must rank #1, got {placed_repos}")
+    assert placed_repos[1] == "med/Both", f"trend 500 next, got {placed_repos}"
+    assert placed_repos[-1] == "low_trend/Big", (
+        f"trend 10 must rank LAST (not ahead of higher-trend models): {placed_repos}")
+    # every mocked download lands in the folder for the card it fits
+    for cand in result:
+        ll = llama_ai.download_top_tier_candidate(cand, models_root=str(tmp_path))
+        assert Path(ll).is_file()
+        assert f"/{cand['tier_folder']}/" in ll

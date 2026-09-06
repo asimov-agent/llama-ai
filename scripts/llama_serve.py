@@ -87,7 +87,11 @@ TOP_TIER_FAMILIES = (
     "k2-", "mova",     # IFM/K2-Horizon-MoVA-36B-A4B-GGUF (trend ~74)
 )
 MIN_TOP_TIER_GB = 4.0          # below this the quant file is treated as a toy/small
-TIER_LIMITS_GB = ((48, "48GB"), (24, "24GB"), (16, "16GB"), (8, "8GB"))
+# Growing tier ladder for the `TierGB` placement folder. Extends DOWN to 1/2/4 GB so
+# tiny CPU cards and small models get truthful folders too, and UP past 48 GB so big
+# cards (256/512 GB+) get truthful tiers instead of everything-capped-at-48GB.
+# Availability is bounded by the detected/overridden card in pick_tier_folder().
+TIER_LADDER_GB = (1, 2, 4, 8, 16, 24, 48, 96, 128, 192, 256, 384, 512, 768, 1024, 1536, 2048, 3072)
 HF_API = "https://huggingface.co/api/models"
 HF_UA = "llama-ai/1.0 (top-tier-download)"
 LLAMA_RAM_ENV = "LLAMA_RAM_BYTES"
@@ -505,24 +509,33 @@ def _repo_gguf_files(repo):
     return files
 
 
-def pick_tier_folder(size_bytes):
-    """Smallest GPU tier folder (8/16/24/48 GB) that can hold this model.
+def pick_tier_folder(size_bytes, total_ram_bytes=None):
+    """Smallest GPU tier folder that holds this model, bounded by the card that runs it.
 
-    A model's tier is the smallest labeled GPU it fits on, NOT bounded by the
-    current card. 15 GB -> 16GB, 22 GB -> 24GB, 29 GB -> 48GB.
+    The tier ladder (TIER_LADDER_GB) is a growing superset of the old 8/16/24/48
+    buckets. Only ladder entries <= the card's total (detected or overridden) are
+    "available"; a model's tier is the smallest AVAILABLE bucket >= its size, else
+    the largest available bucket. So a 48 GB card keeps 8/16/24/48 exactly, while a
+    512 GB card also has 96/128/.../512 and can label a 400 GB model truthfully.
     """
+    total = total_ram_bytes if total_ram_bytes is not None else read_total_ram_bytes()
+    card_gb = total / (1024 ** 3)
+    available = [b for b in TIER_LADDER_GB if b <= card_gb]
+    if not available:
+        # degenerate tiny card: fall back to the smallest bucket
+        return f"{TIER_LADDER_GB[0]}GB"
     gb = size_bytes / (1024 ** 3)
-    for limit, name in sorted(TIER_LIMITS_GB):   # (8,24,16,48) -> (8,16,24,48)
-        if gb <= limit:
-            return name
-    return "48GB"
+    for bucket in available:
+        if gb <= bucket:
+            return f"{bucket}GB"
+    return f"{available[-1]}GB"  # bigger than any available bucket -> largest
 
 
-def provider_dest_path(repo, filename, size_bytes, models_root=None):
+def provider_dest_path(repo, filename, size_bytes, models_root=None, total_ram_bytes=None):
     """Provider-aware destination: ~/{MODELS_ROOT}/<owner>/<family>/<TierGB>/<file>."""
     root = models_root or MODELS_ROOT
     owner, family = _split_repo(repo)
-    tier = pick_tier_folder(size_bytes)
+    tier = pick_tier_folder(size_bytes, total_ram_bytes)
     return os.path.join(root, owner, family, tier, filename)
 
 
@@ -610,9 +623,9 @@ def discover_top_tier(limit=10, total_ram_bytes=None, headroom_bytes=None,
                 "downloads": repo_info["downloads"],
                 "likes": repo_info["likes"],
                 "trendingScore": repo_info["trendingScore"],
-                "tier_folder": pick_tier_folder(chosen["size_bytes"]),
+                "tier_folder": pick_tier_folder(chosen["size_bytes"], total),
                 "dest_path": provider_dest_path(repo, os.path.basename(chosen["path"]),
-                                                chosen["size_bytes"]),
+                                                chosen["size_bytes"], total_ram_bytes=total),
             })
     # Rank so a provider's high + lower quants stay together (group by provider).
     # Order PROVIDERS by what's TRENDING now (highest trendingScore first) — this is
