@@ -1014,9 +1014,10 @@ def test_probe_downloadable_verifies_real_gguf_chunk(monkeypatch):
 
 
 def test_skip_summary_line_handles_3tuples_without_crash():
-    """The completion summary must tolerate the REAL skip-list shape (repo, filename,
-    reason) 3-tuples and report skips grouped by reason — regression for issue #56
-    (previously crashed with 'ValueError: not enough values to unpack (expected 2)')."""
+    """Given a non-empty skip_summary of (repo, filename, reason) 3-tuples,
+    When  we format it via _skip_summary_line,
+    Then  it returns the grouped-by-reason line WITHOUT crashing (regression for
+          issue #56 — previously 'ValueError: not enough values to unpack (expected 2)')."""
     skip_summary = [
         ("orcarouter/Qwen3.8-27B-Uncensored-GGUF", "a-Q8_0.gguf", "access-denied"),
         ("orcarouter/Qwen3.8-27B-Uncensored-GGUF", "a-Q5_K_M.gguf", "access-denied"),
@@ -1029,6 +1030,8 @@ def test_skip_summary_line_handles_3tuples_without_crash():
 
 
 def test_skip_summary_line_empty_no_suffix():
-    """When nothing was pre-flight skipped, the summary has no skip suffix."""
+    """Given no pre-flight skips (empty/None skip_summary),
+    When  we format it via _skip_summary_line,
+    Then  it returns '' (so the completion line has no skip suffix)."""
     assert llama_ai._skip_summary_line([]) == ""
     assert llama_ai._skip_summary_line(None) == ""

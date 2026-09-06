@@ -472,6 +472,19 @@ scenario is the contract the tests are written against, so it must read like an 
   wired into the Makefile/CI gate. A validator that confirms the spec is valid (`make
   openspec-validate`) is required before a "done" claim, and the strict G/W/T block format
   should be used so the scenario is unambiguous.
+- **The Python test itself must mirror the scenario:** each acceptance/behavior test's docstring
+  MUST carry the same `Given / When / Then` (and `And`) lines as the spec scenario it
+  implements — a test with a plain prose docstring (or none) that implements a behavior
+  scenario is a defect. Example:
+  ```python
+  def test_real_probe_ok_on_public_downloadable_repo():
+      """Given a public GGUF repo/file on Hugging Face,
+      When   we pre-flight it with the probe,
+      Then   it returns 'ok' (real GGUF chunk over an authenticated 200)."""
+      ...
+  ```
+  This keeps the spec scenario and the test in lock-step: a reviewer can read the test's
+  docstring and immediately confirm it maps to a `#### Scenario` with the same Given/When/Then.
 
 ### README must always be kept in sync
 

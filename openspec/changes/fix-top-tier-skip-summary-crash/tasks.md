@@ -14,3 +14,6 @@
       (separate lines per step, not inline) per AGENTS.md.
 - [x] 5. Add the durable AGENTS.md rule: every spec scenario MUST have Given / When / Then,
       and every scenario implies a matching test wired into the Makefile/CI gate.
+- [x] 6. Require (AGENTS.md) + apply: each Python acceptance/behavior test's docstring mirrors
+      its spec scenario with the same `Given / When / Then` lines; added G/W/T docstrings to
+      the 2 summary tests.
