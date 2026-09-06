@@ -51,6 +51,9 @@ owner; tier 8/16/24/48), `scan_models()` sees it immediately; serve reuses `buil
   placement, downloader invocation).
 - `make test-top-tier` GREEN — real, no-mock acceptance: live HF query + dynamic fit-gate +
   provider placement + real download (idempotent) + same-size-corruption → restored refresh test.
+- `make test-top-tier-serve` GREEN — downloads a **lightweight** top-tier model for real, loads
+  llama-server, waits /health, POSTs "hi" (asserts reply), re-measures RAM for headroom. Runs on
+  local (GPU/CPU) and in CI (`test-top-tier-serve-ci`).
 - Real host/GPU proof (AGENTS.md): a downloaded top-tier model loads on Metal, `/health`, POST
   "hi", post-load RAM shows headroom not exhausted; CI cpu-health covers the CPU path.
 - README mirrors the flag/workflow/layout; issue + OpenSpec stay in sync (AGENTS.md).
