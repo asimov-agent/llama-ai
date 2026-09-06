@@ -12,6 +12,6 @@
       a large model is offered, placed in a non-`48GB` tier, and still served/listed.
 - [x] 6. Update README (tier-folder layout + the growth past 48 GB) and keep the issue (#51) body,
       OpenSpec proposal/spec/tasks, and README aligned (AGENTS.md sync-check).
-- [ ] 7. Verify: `make lint`, `make test-unit` (incl. the new pick_tier_folder tests), and
+- [x] 7. Verify: `make lint`, `make test-unit` (incl. the new pick_tier_folder tests), and
       `make openspec-validate NAME=feat-dynamic-tier-folders-512-gb` all pass; commit + push
       the feature branch; open PR against `main` referencing issue #51.
