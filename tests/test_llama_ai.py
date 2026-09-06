@@ -685,3 +685,76 @@ def test_repo_fit_classification_matches_table():
     # GPU budget boundary: 48 GiB - 3.6 - 1 ~ 43.4 GiB -> a 43 GB model barely, 44 doesn't
     assert fits_ok(40) is True
     assert fits_ok(45) is False
+
+
+def test_pick_tier_folder_small_card_unchanged():
+    """A 48 GB card keeps the old 8/16/24/48 buckets exactly (no regression)."""
+    _48 = 48 * 1024 ** 3
+    assert llama_ai.pick_tier_folder(int(0.43 * 1024 ** 3), _48) == "8GB"
+    assert llama_ai.pick_tier_folder(int(7 * 1024 ** 3), _48) == "8GB"
+    assert llama_ai.pick_tier_folder(int(15 * 1024 ** 3), _48) == "16GB"
+    assert llama_ai.pick_tier_folder(int(22 * 1024 ** 3), _48) == "24GB"
+    assert llama_ai.pick_tier_folder(int(29 * 1024 ** 3), _48) == "48GB"
+    assert llama_ai.pick_tier_folder(int(47 * 1024 ** 3), _48) == "48GB"
+
+
+def test_pick_tier_folder_big_card_gets_truthful_tiers():
+    """On a 512 GB card a large model is labelled by a large tier, NEVER 48GB/."""
+    _512 = 512 * 1024 ** 3
+    # small/mid models still use the small buckets on the big card
+    assert llama_ai.pick_tier_folder(int(29 * 1024 ** 3), _512) == "48GB"
+    assert llama_ai.pick_tier_folder(int(7 * 1024 ** 3), _512) == "8GB"
+    # large models get tiers that grow past 48
+    assert llama_ai.pick_tier_folder(int(60 * 1024 ** 3), _512) == "96GB"
+    assert llama_ai.pick_tier_folder(int(100 * 1024 ** 3), _512) == "128GB"
+    assert llama_ai.pick_tier_folder(int(256 * 1024 ** 3), _512) == "256GB"
+    assert llama_ai.pick_tier_folder(int(400 * 1024 ** 3), _512) == "512GB"
+    assert llama_ai.pick_tier_folder(int(512 * 1024 ** 3), _512) == "512GB"
+    # a model bigger than the card falls back to the largest available bucket
+    assert "48GB" != llama_ai.pick_tier_folder(int(400 * 1024 ** 3), _512)
+    assert llama_ai.pick_tier_folder(int(700 * 1024 ** 3), _512) == "512GB"
+
+
+def test_pick_tier_folder_deterministic_with_total_argument():
+    """Passing total_ram_bytes makes placement independent of the runner's card."""
+    _512 = 512 * 1024 ** 3
+    _48 = 48 * 1024 ** 3
+    # same 60 GB model, two cards -> two different truthful tiers
+    assert llama_ai.pick_tier_folder(int(60 * 1024 ** 3), _48) == "48GB"
+    assert llama_ai.pick_tier_folder(int(60 * 1024 ** 3), _512) == "96GB"
+
+
+def test_discover_top_tier_offers_and_places_large_model_on_big_card(monkeypatch):
+    """On a 512 GB card a 400 GB trending model IS offered (fit gate passes) and its
+    tier_folder is a large tier (512GB/), never misleadingly 48GB/ (issue #51)."""
+    repo = "unsloth/Qwen4-400B-GGUF"
+    files_by_repo = {
+        repo: [  # a 400 GB bf16 + a 200 GB lower quant, both only fit a big card
+            {"path": "model-BF16.gguf", "size_bytes": 400 * 1024 ** 3, "size_gb": 400.0},
+            {"path": "model-Q8_0.gguf", "size_bytes": 200 * 1024 ** 3, "size_gb": 200.0},
+        ],
+    }
+
+    def fake_trending(limit=25):
+        return [{"repo": repo, "downloads": 1000, "likes": 100, "trendingScore": 500}]
+
+    def fake_files(r):
+        return files_by_repo[r]
+
+    monkeypatch.setattr(llama_ai, "_trending_gguf_repos", fake_trending)
+    monkeypatch.setattr(llama_ai, "_repo_gguf_files", fake_files)
+    monkeypatch.setattr(llama_ai, "MIN_TOP_TIER_GB", 1.0)
+
+    _512 = 512 * 1024 ** 3
+    _1 = 1024 ** 3
+    result = llama_ai.discover_top_tier(limit=4, total_ram_bytes=_512,
+                                        headroom_bytes=_1, min_trending_score=0,
+                                        per_provider=2)
+    # both quants are offered (each fits 512 GB with the 1 GiB headroom)
+    assert len(result) == 2, f"expected 2 candidates on 512 GB card, got {len(result)}"
+    tiers = [c["tier_folder"] for c in result]
+    assert "512GB" in tiers, f"the 400 GB model must land in a big tier, got {tiers}"
+    assert all(t != "48GB" for t in tiers), f"big models must never be 48GB/, got {tiers}"
+    # 400 GB -> 512GB/ ; 200 GB -> 256GB/ (next available bucket >= 200)
+    assert result[0]["size_gb"] == 400.0 and result[0]["tier_folder"] == "512GB"
+    assert result[1]["size_gb"] == 200.0 and result[1]["tier_folder"] == "256GB"

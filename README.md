@@ -188,6 +188,17 @@ accepted — an HTML error page, truncated/corrupt stub, or wrong-model-under-ri
 ~/models/unsloth/Qwen3.8-27B/48GB/Qwen3.8-27B-UD-Q8_K_XL.gguf
 ```
 
+The `TierGB` folder is **dynamic and bounded by the card that runs the model** — it's the
+smallest available bucket ≥ the model size, from a growing ladder (8/16/24/48/96/128/192/256/
+384/512/...), where only buckets ≤ the detected/overridden card exist. So a **48 GB card keeps
+the classic 8/16/24/48** folders, while a **256/512 GB card also gains large tiers** and labels a
+400 GB model `512GB/` (never misleadingly `48GB/`):
+
+```
+48 GB card:  29GB -> 48GB/   47GB -> 48GB/            (unchanged)
+512 GB card: 60GB -> 96GB/  100GB -> 128GB/  400GB -> 512GB/
+```
+
 Re-runs are **idempotent**: the real `hf` (huggingface_hub) CLI content-addresses its cache
 by etag, and the launcher skips entirely when the target file is already complete — so you
 never re-download the whole model.

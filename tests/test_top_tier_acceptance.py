@@ -97,11 +97,12 @@ def test_provider_placement_specific():
     repo = "unsloth/Qwen3.8-27B-GGUF"
     fn = "Qwen3.8-27B-Q8_0.gguf"
     root = "/tmp/llama-models-test"
-    p = llama_ai.provider_dest_path(repo, fn, 29 * 1024 ** 3, models_root=root)
+    _48 = 48 * 1024 ** 3  # deterministic card; placement must not depend on the runner's RAM
+    p = llama_ai.provider_dest_path(repo, fn, 29 * 1024 ** 3, models_root=root, total_ram_bytes=_48)
     assert p == "/tmp/llama-models-test/unsloth/Qwen3.8-27B-GGUF/48GB/Qwen3.8-27B-Q8_0.gguf"
-    p2 = llama_ai.provider_dest_path(repo, fn, 15 * 1024 ** 3, models_root=root)
+    p2 = llama_ai.provider_dest_path(repo, fn, 15 * 1024 ** 3, models_root=root, total_ram_bytes=_48)
     assert p2.endswith("/16GB/Qwen3.8-27B-Q8_0.gguf")
-    p3 = llama_ai.provider_dest_path(repo, fn, 22.5 * 1024 ** 3, models_root=root)
+    p3 = llama_ai.provider_dest_path(repo, fn, 22.5 * 1024 ** 3, models_root=root, total_ram_bytes=_48)
     assert p3.endswith("/24GB/Qwen3.8-27B-Q8_0.gguf")
 
 
