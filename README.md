@@ -205,6 +205,16 @@ Re-runs are **idempotent**: the real `hf` (huggingface_hub) CLI content-addresse
 by etag, and the launcher skips entirely when the target file is already complete — so you
 never re-download the whole model.
 
+**Only listed are models that can actually download.** Before the batch commits, every
+candidate is **pre-flight probed**: `--download-top-tier` fetches a real ~64 KiB chunk of
+each file (a ranged request) and verifies it is genuine GGUF data over an authenticated 200
+— so **gated (403/401 "requires approval")**, **dead (404)**, and **200-but-HTML/error-shell**
+repos are **skipped fast** (one cheap probe, not 3 slow failed downloads) and logged clearly:
+`[top-tier] skipping <repo>::<file>: access-denied (403)`. The list is then **refilled from
+the next fitting provider**, so the requested `--count × --per-provider` total is honored even
+when some trending repos are unreachable — no more silent "8 of the intended 10". The final
+report shows `downloaded N/M (+S skipped: access-denied, dead)`.
+
 ---
 
 ## Verification, loop & CI (containerized — same everywhere)
