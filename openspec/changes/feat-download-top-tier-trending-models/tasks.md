@@ -70,13 +70,13 @@
       "hi" replied, wired RAM 2.8->37 GB with ~3.9 GB headroom remaining.
 - [x] 9d. Wire verification into the loop harness + Makefile: `test-top-tier` target
       (host, no-mock) added to `loop_harness.py` as a stage and to the Makefile.
-- [x] 9f. Batch download + progress + speed: `--download-top-tier` downloads the top N
-      DISTINCT providers (one model each) with per-provider retry (up to 3×, no batch
-      abort on a single failure); `hf_download.py` uses `HF_XET_HIGH_PERFORMANCE=1`
-      (hf-xet, never disabling it) and prints a live **0-100%** progress (size, MB/s,
-      elapsed) to the terminal + `.progress.log`; completed models are never re-fetched
-      on re-run (idempotent). Covered by `test_discover_one_model_per_provider` +
-      `test_default_count_is_five` + unit dedupe test.
+- [x] 9f. Batch download + progress + speed: `--download-top-tier` downloads across the top N
+      DISTINCT providers (each yielding `--per-provider` high + lower quants) with per-provider
+      retry (up to 3×, no batch abort on a single failure); `hf_download.py` uses
+      `HF_XET_HIGH_PERFORMANCE=1` (hf-xet, never disabling it) and prints a live **0-100%**
+      progress (size, MB/s, elapsed) to the terminal + `.progress.log`; completed models are never
+      re-fetched on re-run (idempotent). Covered by `test_discover_high_and_lower_quants_per_provider` +
+      `test_default_count_is_five` + unit dedupe/trending tests.
 - [x] 9g. Serve-after-download (A6) automated: `test_top_tier_serve.py` downloads a
       lightweight (0.5B) top-tier model for real, launches llama-server, waits /health,
       POSTs "hi", asserts a reply, and re-measures RAM to prove headroom remains. Wired
@@ -88,7 +88,7 @@
       are consistent — no drift (alignment checked). 
 - [x] 12. Verification (tick the moment done): `make openspec-validate
       NAME=feat-download-top-tier-trending-models` exits 0, all `tasks.md` ticked,
-      `make lint` GREEN, `make test-unit` GREEN (103 passed from main checkout),
-      `make test-top-tier` (real, no-mock) GREEN (4 passed), `/health` + "hi" +
-      remaining-RAM proof GREEN on the 48 GB Metal host — feature is done; open the
-      PR referencing #49.
+      `make lint` GREEN, `make test-unit` GREEN (27 hermetic incl. fit-gate/trending/IQ/MTP/
+      metadata-verify), `make test-top-tier` (real, no-mock) GREEN, `make test-top-tier-serve`
+      (download -> serve -> "hi" -> RAM) GREEN on host and CI, `/health` + "hi" + remaining-RAM
+      proof GREEN on the 48 GB Metal host — feature is done; open the PR referencing #49.
