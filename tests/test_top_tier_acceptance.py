@@ -169,6 +169,43 @@ def _lightweight_candidate(tmp_root, total_ram_bytes=None):
     }
 
 
+def test_real_probe_ok_on_public_downloadable_repo():
+    """Story: the pre-flight probe REALLY downloads a chunk and confirms a public repo
+    is downloadable (200 + real GGUF data), so a genuine provider is kept.
+
+    Given  a public GGUF repo/file on Hugging Face,
+    When   we pre-flight it with the probe,
+    Then   the probe returns "ok" (it fetched an actual GGUF data chunk, not a 200
+           HTML/error shell), proving auth-ok and real downloadability.
+    """
+    _real_hf()
+    result = llama_ai._probe_file_downloadable(
+        "unsloth/Qwen3.8-27B-GGUF", "Qwen3.8-27B-UD-Q8_K_XL.gguf")
+    assert result == "ok", f"public downloadable repo must probe 'ok', got {result}"
+
+
+def test_real_probe_gated_repo_is_access_denied():
+    """Story: the pre-flight probe catches a GATED (auth-required) repo so it's
+    skipped instead of dragging the batch through 3 slow failed downloads.
+
+    Given  a repo that requires approval (gated) is trending,
+    When   we pre-flight one of its files,
+    Then   the probe returns "access-denied" (401/403), so the batch skips it once.
+    """
+    _real_hf()
+    result = llama_ai._probe_file_downloadable(
+        "orcarouter/Qwen3.8-27B-Uncensored-GGUF", "Qwen3.8-27B-Uncensored-Q8_0.gguf")
+    assert result == "access-denied", f"gated repo must probe 'access-denied', got {result}"
+
+
+def test_real_probe_dead_file_is_dead():
+    """Story: the pre-flight probe catches a 404-dead file so it's skipped."""
+    _real_hf()
+    result = llama_ai._probe_file_downloadable(
+        "unsloth/Qwen3.8-27B-GGUF", "totally-missing-xyz-abcdef.gguf")
+    assert result == "dead", f"dead file must probe 'dead', got {result}"
+
+
 def test_real_download_then_repeat_is_fast_and_safe():
     """Story: download a real top model, then run again without clobbering.
 

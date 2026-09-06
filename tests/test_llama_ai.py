@@ -377,6 +377,7 @@ def test_discover_top_tier_min_trending_score_filters(monkeypatch):
 
     monkeypatch.setattr(llama_ai, "_trending_gguf_repos", fake_trending)
     monkeypatch.setattr(llama_ai, "_repo_gguf_files", fake_files)
+    monkeypatch.setattr(llama_ai, "_probe_file_downloadable", lambda *a, **k: "ok")
     monkeypatch.setattr(llama_ai, "MIN_TOP_TIER_GB", 1.0)
 
     # no floor -> both fit and are returned, sorted by size (tie -> trend desc)
@@ -429,6 +430,7 @@ def test_discover_top_tier_high_and_lower_per_provider(monkeypatch):
 
     monkeypatch.setattr(llama_ai, "_trending_gguf_repos", fake_trending)
     monkeypatch.setattr(llama_ai, "_repo_gguf_files", fake_files)
+    monkeypatch.setattr(llama_ai, "_probe_file_downloadable", lambda *a, **k: "ok")
     monkeypatch.setattr(llama_ai, "MIN_TOP_TIER_GB", 1.0)
 
     # 3 providers x 2 quants (high+lower), ordered by TRENDING (not by file size)
@@ -471,6 +473,7 @@ def test_discover_drops_low_fidelity_iq_quants(monkeypatch):
 
     monkeypatch.setattr(llama_ai, "_trending_gguf_repos", fake_trending)
     monkeypatch.setattr(llama_ai, "_repo_gguf_files", fake_files)
+    monkeypatch.setattr(llama_ai, "_probe_file_downloadable", lambda *a, **k: "ok")
     monkeypatch.setattr(llama_ai, "MIN_TOP_TIER_GB", 1.0)
 
     result = llama_ai.discover_top_tier(limit=4, total_ram_bytes=48 * 1024 ** 3,
@@ -506,6 +509,7 @@ def test_discover_drops_mtp_companion_files(monkeypatch):
 
     monkeypatch.setattr(llama_ai, "_trending_gguf_repos", fake_trending)
     monkeypatch.setattr(llama_ai, "_repo_gguf_files", fake_files)
+    monkeypatch.setattr(llama_ai, "_probe_file_downloadable", lambda *a, **k: "ok")
     monkeypatch.setattr(llama_ai, "MIN_TOP_TIER_GB", 1.0)
 
     result = llama_ai.discover_top_tier(limit=4, total_ram_bytes=48 * 1024 ** 3,
@@ -539,6 +543,7 @@ def test_fit_gate_rejects_too_big_model(monkeypatch):
 
     monkeypatch.setattr(llama_ai, "_trending_gguf_repos", fake_trending)
     monkeypatch.setattr(llama_ai, "_repo_gguf_files", fake_files)
+    monkeypatch.setattr(llama_ai, "_probe_file_downloadable", lambda *a, **k: "ok")
     monkeypatch.setattr(llama_ai, "MIN_TOP_TIER_GB", 1.0)
 
     result = llama_ai.discover_top_tier(limit=2, total_ram_bytes=total_small,
@@ -568,6 +573,7 @@ def test_lower_quant_keeps_comfortable_headroom(monkeypatch):
 
     monkeypatch.setattr(llama_ai, "_trending_gguf_repos", fake_trending)
     monkeypatch.setattr(llama_ai, "_repo_gguf_files", fake_files)
+    monkeypatch.setattr(llama_ai, "_probe_file_downloadable", lambda *a, **k: "ok")
     monkeypatch.setattr(llama_ai, "MIN_TOP_TIER_GB", 1.0)
 
     result = llama_ai.discover_top_tier(limit=4, total_ram_bytes=total,
@@ -746,6 +752,7 @@ def test_discover_top_tier_offers_and_places_large_model_on_big_card(monkeypatch
 
     monkeypatch.setattr(llama_ai, "_trending_gguf_repos", fake_trending)
     monkeypatch.setattr(llama_ai, "_repo_gguf_files", fake_files)
+    monkeypatch.setattr(llama_ai, "_probe_file_downloadable", lambda *a, **k: "ok")
     monkeypatch.setattr(llama_ai, "MIN_TOP_TIER_GB", 1.0)
 
     _512 = 512 * 1024 ** 3
@@ -822,6 +829,7 @@ def test_placement_fit_gate_and_folder_agree(monkeypatch):
 
     monkeypatch.setattr(llama_ai, "_trending_gguf_repos", fake_trending)
     monkeypatch.setattr(llama_ai, "_repo_gguf_files", fake_files)
+    monkeypatch.setattr(llama_ai, "_probe_file_downloadable", lambda *a, **k: "ok")
     monkeypatch.setattr(llama_ai, "MIN_TOP_TIER_GB", 1.0)
 
     # headroom_bytes is passed separately; the gate uses size+head+kv <= total
@@ -852,7 +860,7 @@ def test_placement_fit_gate_and_folder_agree(monkeypatch):
 # real file is in the correct tier folder — for card sizes 512/256/128/96/64/48
 # and the tiny 32/16/8/2 GB edge cases.
 # ---------------------------------------------------------------------------
-def _mock_discovery(monkeypatch, repos_files, min_gb=4.0):
+def _mock_discovery(monkeypatch, repos_files, min_gb=4.0, probe_result="ok"):
     """Install fake trending + file-list so discover_top_tier runs hermetically."""
     # repos_files: {repo: {"trend": int, "files": [(name, size_gb), ...]}}
     def fake_trending(limit=25):
@@ -867,8 +875,14 @@ def _mock_discovery(monkeypatch, repos_files, min_gb=4.0):
         return [{"path": name, "size_bytes": int(gb * 1024 ** 3), "size_gb": gb}
                 for (name, gb) in repos_files[repo]["files"]]
 
+    def fake_probe(repo, filename, timeout=15, probe_bytes=65536):
+        if isinstance(probe_result, dict):
+            return probe_result.get(repo, "ok")
+        return probe_result
+
     monkeypatch.setattr(llama_ai, "_trending_gguf_repos", fake_trending)
     monkeypatch.setattr(llama_ai, "_repo_gguf_files", fake_files)
+    monkeypatch.setattr(llama_ai, "_probe_file_downloadable", fake_probe)
     monkeypatch.setattr(llama_ai, "MIN_TOP_TIER_GB", min_gb)
 
 
@@ -955,3 +969,45 @@ def test_mock_download_picks_top5_by_trend_and_places(tmp_path, monkeypatch):
         ll = llama_ai.download_top_tier_candidate(cand, models_root=str(tmp_path))
         assert Path(ll).is_file()
         assert f"/{cand['tier_folder']}/" in ll
+
+
+def test_discover_skips_gated_repo_and_refills(tmp_path, monkeypatch):
+    """A 401/403-gated repo is excluded pre-flight (probe fails) and discovery REFILLS
+    the count from the next provider, so len(cands) stays at `limit` even when some
+    trending repos can't be downloaded (issue #53)."""
+    G = 1024 ** 3
+    repos_files = {
+        "good/A": {"trend": 900, "files": [("q8.gguf", 20.0)]},
+        "gated/B": {"trend": 800, "files": [("q8.gguf", 25.0)]},   # probe -> access-denied
+        "good/C": {"trend": 700, "files": [("q8.gguf", 30.0)]},
+    }
+    _mock_discovery(monkeypatch, repos_files, min_gb=1.0,
+                    probe_result={"good/A": "ok", "gated/B": "access-denied", "good/C": "ok"})
+    total = 512 * G
+    head = 3 * G
+    limit = 2
+    result = llama_ai.discover_top_tier(limit=limit, total_ram_bytes=total,
+                                        headroom_bytes=head, min_trending_score=0,
+                                        per_provider=1)
+    placed = [c["repo"] for c in result]
+    assert len(result) == limit, f"must refill to {limit}, got {len(result)}: {placed}"
+    assert "gated/B" not in placed, f"gated repo must be excluded, got {placed}"
+    assert "good/A" in placed and "good/C" in placed, f"must refill from next provider, got {placed}"
+
+
+def test_probe_downloadable_verifies_real_gguf_chunk(monkeypatch):
+    """The pre-flight probe verifies a REAL GGUF chunk, and rejects an HTML/error body
+    even when served with 200 (auth-ok but not a real model file)."""
+
+    def make_urlopen(body):
+        class Ctx:
+            def __enter__(self): return type("R", (), {"read": lambda s, n=None: body})()
+            def __exit__(self, *a): return False
+        return lambda *a, **k: Ctx()
+
+    monkeypatch.setattr(llama_ai.urllib.request, "urlopen", make_urlopen(b"GGUF" + b"\x00" * 1024))
+    assert llama_ai._probe_file_downloadable("x/repo", "m.gguf") == "ok"
+
+    monkeypatch.setattr(llama_ai.urllib.request, "urlopen",
+                        make_urlopen(b"<html><body>404 Not Found</body></html>"))
+    assert llama_ai._probe_file_downloadable("x/repo", "m.gguf") is None  # 200-but-HTML -> not real

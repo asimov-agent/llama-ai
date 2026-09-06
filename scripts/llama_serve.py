@@ -509,6 +509,40 @@ def _repo_gguf_files(repo):
     return files
 
 
+def _probe_file_downloadable(repo, filename, timeout=15, probe_bytes=64 * 1024):
+    """Pre-flight check that a repo file is genuinely DOWNLOADABLE by fetching a
+    real chunk of bytes (not just a status code).
+
+    Downloads the first `probe_bytes` (a ranged request — cheap, no full download)
+    and verifies the bytes are real GGUF model data, not an HTML/error page that a
+    gated or broken server might serve with HTTP 200. Returns one of:
+      "ok"                  -> fetched a real chunk that looks like GGUF binary
+      "access-denied"       -> 401/403 (gated/private: 'requires approval')
+      "dead"                -> 404 (file/repo gone)
+      None                  -> transient/other failure (caller decides: retry, not skip)
+    """
+    url = f"https://huggingface.co/{repo}/resolve/main/{filename}"
+    req = urllib.request.Request(url, method="GET")
+    req.add_header("User-Agent", HF_UA)
+    req.add_header("Range", f"bytes=0-{probe_bytes - 1}")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            data = r.read(probe_bytes)
+            if data[:4] == b"GGUF":
+                return "ok"
+            if data.startswith(b"<") or b"<html" in data[:512] or b"error" in data[:512].lower():
+                return None  # HTML/error body served as 200 -> not a real model
+            return "ok" if len(data) >= 256 else None
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            return "access-denied"
+        if e.code == 404:
+            return "dead"
+        return None
+    except Exception:
+        return None
+
+
 def pick_tier_folder(size_bytes, total_ram_bytes=None):
     """Smallest GPU tier folder that holds this model, bounded by the card that runs it.
 
@@ -548,7 +582,7 @@ def _split_repo(repo):
 
 
 def discover_top_tier(limit=10, total_ram_bytes=None, headroom_bytes=None,
-                      min_trending_score=0, per_provider=2):
+                      min_trending_score=0, per_provider=2, skip_summary=None):
     """Ranked top-tier GGUF candidates that FIT the card, with real file sizes.
 
     Combines the three signals (trending + top-tier family + fit gate) using the
@@ -594,39 +628,69 @@ def discover_top_tier(limit=10, total_ram_bytes=None, headroom_bytes=None,
     # variety from each provider, and the lower quants fit with comfortable margin.
     # Both must fit comfortably.
     cands = []
-    for repo_info in _trending_gguf_repos(limit=limit * 3):
-        if repo_info["trendingScore"] < min_trending_score:
-            continue
-        repo = repo_info["repo"]
-        files = candidate_files(repo)
-        owner_picks = []
-        best = None
-        for f in files:
-            if f["size_bytes"] + head + kv_reserve > total:
-                continue  # doesn't fit comfortably -> skip
-            if best is None:
-                best = f["size_bytes"]
-                owner_picks.append(f)
+    skipped = []  # (repo, filename, reason) for gated/dead repos
+    seen_repos = set()
+    window = max(limit, 10) * 3
+    while len(cands) < limit:
+        repos = _trending_gguf_repos(limit=window)
+        new_repos = [r for r in repos if r["repo"] not in seen_repos]
+        if not new_repos:
+            break  # trending list exhausted (all same) — nothing more to refill with
+        for repo_info in new_repos:
+            seen_repos.add(repo_info["repo"])
+            if repo_info["trendingScore"] < min_trending_score:
                 continue
-            # 2nd+ pick: must be a clearly-different (lower) quant tier (~25% smaller)
-            if best - f["size_bytes"] >= 0.25 * best:
-                owner_picks.append(f)
-                best = f["size_bytes"]  # allow a further-lower quant after this one
-            if len(owner_picks) >= per_provider:
+            repo = repo_info["repo"]
+            files = candidate_files(repo)
+            owner_picks = []
+            best = None
+            for f in files:
+                if f["size_bytes"] + head + kv_reserve > total:
+                    continue  # doesn't fit comfortably -> skip
+                if best is None:
+                    best = f["size_bytes"]
+                    owner_picks.append(f)
+                    continue
+                # 2nd+ pick: must be a clearly-different (lower) quant tier (~25% smaller)
+                if best - f["size_bytes"] >= 0.25 * best:
+                    owner_picks.append(f)
+                    best = f["size_bytes"]  # allow a further-lower quant after this one
+                if len(owner_picks) >= per_provider:
+                    break
+            for chosen in owner_picks:
+                filename = os.path.basename(chosen["path"])
+                # PRE-FLIGHT: verify the object is actually downloadable (skip gated/dead fast).
+                probe = _probe_file_downloadable(repo, filename)
+                if probe == "access-denied":
+                    skipped.append((repo, filename, "access-denied"))
+                    print(f"[top-tier] skipping {repo}::{filename}: access-denied (403)", flush=True)
+                    continue
+                if probe == "dead":
+                    skipped.append((repo, filename, "dead"))
+                    print(f"[top-tier] skipping {repo}::{filename}: dead (404)", flush=True)
+                    continue
+                if probe is None:
+                    # transient or a 200-HTML shell served without the right body;
+                    # do NOT hard-skip (could be a blip), but do not count it either here.
+                    print(f"[top-tier] probe inconclusive for {repo}::{filename}", flush=True)
+                cands.append({
+                    "repo": repo,
+                    "filename": filename,
+                    "size_bytes": chosen["size_bytes"],
+                    "size_gb": chosen["size_gb"],
+                    "downloads": repo_info["downloads"],
+                    "likes": repo_info["likes"],
+                    "trendingScore": repo_info["trendingScore"],
+                    "tier_folder": pick_tier_folder(chosen["size_bytes"], total),
+                    "dest_path": provider_dest_path(repo, filename,
+                                                    chosen["size_bytes"], total_ram_bytes=total),
+                })
+            if len(cands) >= limit:
                 break
-        for chosen in owner_picks:
-            cands.append({
-                "repo": repo,
-                "filename": os.path.basename(chosen["path"]),
-                "size_bytes": chosen["size_bytes"],
-                "size_gb": chosen["size_gb"],
-                "downloads": repo_info["downloads"],
-                "likes": repo_info["likes"],
-                "trendingScore": repo_info["trendingScore"],
-                "tier_folder": pick_tier_folder(chosen["size_bytes"], total),
-                "dest_path": provider_dest_path(repo, os.path.basename(chosen["path"]),
-                                                chosen["size_bytes"], total_ram_bytes=total),
-            })
+        window = max(window * 2, limit * 3)  # widen the search window for the next pass
+    # populate the skip summary (repo, reason) for the caller's completion report
+    if skip_summary is not None:
+        skip_summary.extend(skipped)
     # Rank so a provider's high + lower quants stay together (group by provider).
     # Order PROVIDERS by what's TRENDING now (highest trendingScore first) — this is
     # "top-tier trending": the most popular models right now surface first, each with
@@ -779,10 +843,11 @@ def _main_download_top_tier(args):
     print(f"[top-tier] total RAM = {total/(1024**3):.0f} GB, headroom (wired+safety) = "
           f"{head/(1024**3):.1f} GB")
     # `--count` = number of PROVIDERS; each yields per_provider quants (high+lower).
+    skip_summary = []  # (repo, reason) for gated/dead repos dropped pre-flight
     cands = discover_top_tier(limit=max(1, limit * per_provider),
                               total_ram_bytes=total, headroom_bytes=head,
                               min_trending_score=args.min_trending_score,
-                              per_provider=per_provider)
+                              per_provider=per_provider, skip_summary=skip_summary)
     if not cands:
         print("[top-tier] no trending top-tier GGUF model fits the available card right now. "
               "Nothing downloaded.")
@@ -832,6 +897,12 @@ def _main_download_top_tier(args):
         print("[top-tier] nothing could be downloaded.")
         sys.exit(1)
     print(f"\n[top-tier] completed {len(completed)}/{len(cands)} provider(s).")
+    if skip_summary:
+        by_reason = {}
+        for _, reason in skip_summary:
+            by_reason[reason] = by_reason.get(reason, 0) + 1
+        parts = ", ".join(f"{n} {r}" for r, n in sorted(by_reason.items()))
+        print(f"[top-tier]   (+{len(skip_summary)} skipped pre-flight: {parts}).")
     print("[top-tier] downloaded models are available to serve. Use the normal "
           "launch path (e.g. `llama-ai <model-name>`) to start llama-server — "
           "`--download-top-tier` only downloads; it never auto-starts the server.")
