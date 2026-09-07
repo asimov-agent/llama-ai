@@ -17,6 +17,7 @@ import subprocess, sys, os, re, time, shutil
 
 MAX_RETRY = 20
 DEFAULT_STALL_SECONDS = 90
+DEFAULT_RETRY_PAUSE = 5
 
 
 def _stall_decision(total, last_bytes, last_advancing, now):
@@ -117,12 +118,15 @@ def main(argv=None):
 
     TOTAL_BYTES = _resolve_expected_bytes(repo, filename, label, expected_bytes)
     stall_threshold = float(os.environ.get("HF_STALL_SECONDS", str(DEFAULT_STALL_SECONDS)))
+    poll_interval = float(os.environ.get("HF_POLL_SECONDS", "3"))
+    retry_pause = float(os.environ.get("HF_RETRY_PAUSE", str(DEFAULT_RETRY_PAUSE)))
+    max_retry = int(os.environ.get("HF_MAX_RETRY", str(MAX_RETRY)))
 
     write_log(f"MODE download {repo} :: {filename} -> {dest}\nSTART {time.ctime()} | max_retry={MAX_RETRY}\n")
 
     t_total = time.time()
     attempt = 1
-    while attempt <= MAX_RETRY:
+    while attempt <= max_retry:
         # WITHOUT refresh: a fully-present file is treated as done (fast path).
         # WITH refresh: always run `hf download` — it etag/checks the Hub and no-ops
         # fast if the local file's content hash still matches; if the file was
@@ -174,7 +178,7 @@ def main(argv=None):
                     print(line, flush=True)
                 last_log = now
             last_bytes = total
-            time.sleep(3)
+            time.sleep(poll_interval)
         # process ended
         try:
             out = proc.stdout.read() if proc.stdout else ""
@@ -192,10 +196,10 @@ def main(argv=None):
         # rc != 0 => connection likely dropped OR we stall-terminated; retry (resumes partial)
         write_log(f"--- rc={rc}; retrying to resume partial ---")
         attempt += 1
-        time.sleep(5)
+        time.sleep(retry_pause)
     else:
-        write_log(f"\nFAILED after {MAX_RETRY} attempts {time.ctime()} disk={tree_bytes(dest, final_path)/1e9:.2f} GB")
-        print(f"[{label}] FAILED after {MAX_RETRY} attempts; disk={tree_bytes(dest, final_path)/1e9:.2f} GB log={log}", flush=True)
+        write_log(f"\nFAILED after {max_retry} attempts {time.ctime()} disk={tree_bytes(dest, final_path)/1e9:.2f} GB")
+        print(f"[{label}] FAILED after {max_retry} attempts; disk={tree_bytes(dest, final_path)/1e9:.2f} GB log={log}", flush=True)
         return 1
 
     print(f"[{label}] done final={tree_bytes(dest, final_path)/1e9:.2f} GB log={log}", flush=True)
