@@ -30,5 +30,6 @@ mandatory issue → OpenSpec → feature branch → PR pipeline.
 
 ## Delivery
 
-- [ ] 3.1 Feature branch pushed to `origin` and a PR opened against `main`
+- [x] 3.1 Feature branch pushed to `origin` and a PR opened against `main`
       referencing GitHub issue #59 (never merged while behind `main`).
+      PR: https://github.com/asimov-agent/llama-ai/pull/60
