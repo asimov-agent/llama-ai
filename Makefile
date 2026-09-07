@@ -157,8 +157,9 @@ test-unit: ## Hermetic unit tests (containerized) — includes the lint regressi
 
 test-agents-e2e: ## REAL end-to-end agent tests (containerized) — runs ONLY *_e2e*.py files directly
 	# issue #63 CI gate: exercises the REAL dispatcher spawn/kill/respawn against a fake
-	# worker that does README issue-work, all within a minute. Only *_e2e*.py files run.
-	$(TEST_RUN) python -m pytest tests/test_watchloop_dispatch_e2e.py -p no:cacheprovider -q
+	# worker that does README issue-work, all within a minute. Only tests/*_e2e*.py run
+	# (glob, so any future e2e file is picked up automatically).
+	$(TEST_RUN) sh -c 'python -m pytest tests/*_e2e*.py -p no:cacheprovider -q'
 
 test-agents-read: ## Guard: AGENTS.md must not match Hermes context-file threat patterns (fail-closed). Host-side: uses a Python >=3.11 that has hermes-agent installed (3rd-party PyPI dep, pinned ==0.19.0; the CI agents-read job installs it itself). Not containerized, to avoid bumping the 3.10 test image.
 	@echo "==> test-agents-read: scanning AGENTS.md with the installed hermes-agent threat scanner"
