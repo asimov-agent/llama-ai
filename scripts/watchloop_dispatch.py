@@ -51,6 +51,7 @@ No worker time limit => a big issue may span ticks and resume from its own log.
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -102,6 +103,14 @@ LOCAL_PROVIDERS = {"", "localhost", "custom", "llama.cpp"}
 # Local llama.cpp OpenAI-compatible endpoint. 127.0.0.1 (not `localhost`, which
 # can resolve to IPv6 ::1 inside some host setups), matching the serving config.
 LOCAL_MODEL_URL = "http://127.0.0.1:11434/v1/models"
+
+# Activity-based worker liveness (issue #63). A worker whose PID is alive but whose
+# own log has NOT grown for this many seconds is considered STUCK (hung, not dead):
+# its process tree is killed and the issue is re-driven from its own log. Defaults
+# to two 20-min dispatch intervals (40 min), tolerating a single slow `llm-local`
+# call (~170s) and a large-model download that still flushes progress. Injection
+# point for hermetic tests.
+STUCK_LOG_STALE_SECONDS = int(os.environ.get("STUCK_LOG_STALE_SECONDS", "2400"))
 
 
 def effective_provider_is_local() -> bool:
@@ -333,6 +342,76 @@ def pid_alive(pid: int) -> bool:
         return True
     except (ProcessLookupError, PermissionError, OSError):
         return False
+
+
+def _children_of(pid: int) -> list[int]:
+    """Child PIDs of *pid* via `pgrep -P` — the single code path.
+
+    `pgrep -P <pid>` lists the DIRECT children of *pid*; the recursive walk in
+    `kill_process_tree` descends the whole tree. Both the macOS host and the Linux
+    CI test container ship `/usr/bin/pgrep`, so this one invocation is sufficient
+    everywhere — there is deliberately no second /proc implementation (AGENTS.md:
+    no dual paths for the same resource). A missing/unrunnable pgrep yields no
+    children and the caller simply gives up killing that branch.
+    """
+    try:
+        out = subprocess.run(
+            ["pgrep", "-P", str(pid)], capture_output=True, text=True
+        ).stdout
+        return [int(t) for t in (out or "").split() if t.strip().isdigit()]
+    except Exception:
+        return []
+
+
+def kill_process_tree(pid: int, _seen: set[int] | None = None) -> None:
+    """Best-effort kill of *pid* and every descendant (issue #63).
+
+    The recorded `.running` PID is the /bin/bash -lc parent of the hermes worker,
+    so killing it alone would orphan the hermes child. We first collect and kill
+    all children (recursively) before the parent, so the whole tree dies. Any PID
+    that is already gone or unkillable is silently tolerated.
+    """
+    seen = _seen if _seen is not None else set()
+    if not pid or pid <= 0 or pid in seen:
+        return
+    seen.add(pid)
+    for child in _children_of(pid):
+        kill_process_tree(child, seen)
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+
+
+def log_stale_seconds(branch_log: str, now: float | None = None) -> float | None:
+    """Seconds since the worker's own log was last written; None if it doesn't exist.
+
+    `None` (no log) means "no evidence of a hang" — a freshly spawned worker that
+    hasn't flushed yet must never be mistaken for a stuck one. Takes an injectable
+    `now` so hermetic tests can stub the clock.
+    """
+    now = now if now is not None else time.time()
+    try:
+        return now - os.path.getmtime(branch_log)
+    except OSError:
+        return None
+
+
+def worker_is_stuck(live_pid: int, branch_log: str, now: float | None = None) -> bool:
+    """One health predicate (issue #63): a live worker that is making NO progress.
+
+    A worker is STUCK only when its PID is alive (the old issue #18 alive-check) AND
+    its own log has not grown for more than `STUCK_LOG_STALE_SECONDS`. A dead PID is
+    NOT ``stuck`` — the existing dead-PID clean+respawn path stays untouched. A
+    missing or fresh log is NOT stuck (no kill), so slow-but-progressing workers
+    (single `llm-local` call ~170s, large-model download) survive.
+    """
+    if not pid_alive(live_pid):
+        return False
+    stale = log_stale_seconds(branch_log, now)
+    if stale is None:
+        return False
+    return stale > STUCK_LOG_STALE_SECONDS
 
 
 def issue_has_pr(issue_num: int) -> bool:
@@ -689,16 +768,40 @@ def _spawn_worker_for_branch(branch: str, slug: str, wd: str, branch_log: str,
             live_pid = int((open(lk).read() or "0").strip() or 0)
         except (ValueError, OSError):
             live_pid = 0
-        if pid_alive(live_pid):
+        if worker_is_stuck(live_pid, branch_log):
+            # issue #63: a LIVE-but-HUNG worker — PID alive yet its own log has
+            # not grown for > STUCK_LOG_STALE_SECONDS. Kill the process tree,
+            # drop the lock, and let the orphan spawn re-drive the issue from
+            # its (stale) log. worker_is_stuck already returns False for a dead
+            # pid (pid_alive short-circuits) or an empty/missing log, so the
+            # existing dead-PID path below stays the ONLY dead-PID resume path.
+            log(f"  {log_prefix}: worker stuck (pid={live_pid}, log stale"
+                f" > {STUCK_LOG_STALE_SECONDS}s); killing tree + resuming")
+            kill_process_tree(live_pid)
+            try:
+                os.remove(lk)
+                lk_fd = os.open(lk, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except OSError:
+                log(f"  {log_prefix}: lock re-acquired elsewhere; skip")
+                return False
+        elif pid_alive(live_pid):
+            # issue #18: a LIVE worker with a FRESH log is healthy — suppress spawn.
             log(f"  {log_prefix}: worker already running (pid={live_pid}, {lk}); skip")
             return False
-        try:
-            os.remove(lk)
-            lk_fd = os.open(lk, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except OSError:
-            log(f"  {log_prefix}: lock re-acquired elsewhere; skip")
-            return False
-        log(f"  {log_prefix}: stale lock pid={live_pid} dead; removing + resuming worker")
+        else:
+            # empty lock, unreadable, or a DEAD recorded pid => issue #18 clean + resume.
+            try:
+                os.remove(lk)
+                lk_fd = os.open(lk, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except OSError:
+                log(f"  {log_prefix}: lock re-acquired elsewhere; skip")
+                return False
+            log(f"  {log_prefix}: stale lock pid={live_pid} dead; removing + resuming worker")
+
+    # Invariant: by this point every branch that didn't return has acquired the
+    # lock (initial os.open, or one of the remove+reopen paths above), so lk_fd
+    # is open and we can record the fresh worker PID into it below.
+    assert lk_fd is not None, "bug: reached spawn without holding the worker lock"
 
     ensure_worktree(branch, slug)
     prompt_file = f"{RUN}/worker-{branch.replace('/', '_')}.prompt"

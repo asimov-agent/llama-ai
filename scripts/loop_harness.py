@@ -45,6 +45,9 @@ STAGES = [
     ("agents-read", ["make", "test-agents-read"]),
     # hermetic gates FIRST after lint (cheap, no deps).
     ("unit", ["make", "test-unit"]),
+    # issue #63: REAL agent-spawn e2e (fake worker does README issue-work, hung
+    # worker is killed+respawned) — runs only *_e2e*.py, within a minute.
+    ("agents-e2e", ["make", "test-agents-e2e"]),
     # host install test — verifies the REAL ~/bin/llama-ai + ~/models artifacts
     # (skipped in-container, runs the host install assertions on the host)
     ("install", ["make", "test-install-host"]),

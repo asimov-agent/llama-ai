@@ -31,9 +31,9 @@ LAUNCHER := $(BIN)/llama-ai
 # it as `llama-server` on PATH. Override if built elsewhere.
 LLAMA_SERVER_BIN ?= $(HOME)/repository/git/llama.cpp/build/bin/llama-server
 
-.PHONY: all install venv-install link uninstall smoke list version help \
+.PHONY: all install venv-install link uninstall smoke list version help \\
 		openspec-image openspec-new openspec-validate openspec-status openspec-shell \\
-		test test-unit test-install test-install-ci test-install-host test-health download-test-model \\
+		test test-unit test-agents-e2e test-install test-install-ci test-install-host test-health download-test-model \\
 		test-image test-clean lint lint-fix loop loop-harness chained
 
 # ---- container runtime (nerdctl preferred, docker fallback) --------------
@@ -155,6 +155,12 @@ test-clean: ## Remove left-over/stopped orphaned containers of the test image (i
 test-unit: ## Hermetic unit tests (containerized) — includes the lint regression + openspec-tasks-check tests
 	$(TEST_RUN) python -m pytest tests/test_llama_ai.py tests/test_hf_download_stall.py tests/test_lint_linefeeds.py tests/test_watchloop_dispatch.py tests/test_check_openspec_tasks.py -p no:cacheprovider -q
 
+test-agents-e2e: ## REAL end-to-end agent tests (containerized) — runs ONLY *_e2e*.py files directly
+	# issue #63 CI gate: exercises the REAL dispatcher spawn/kill/respawn against a fake
+	# worker that does README issue-work, all within a minute. Only tests/*_e2e*.py run
+	# (glob, so any future e2e file is picked up automatically).
+	$(TEST_RUN) sh -c 'python -m pytest tests/*_e2e*.py -p no:cacheprovider -q'
+
 test-agents-read: ## Guard: AGENTS.md must not match Hermes context-file threat patterns (fail-closed). Host-side: uses a Python >=3.11 that has hermes-agent installed (3rd-party PyPI dep, pinned ==0.19.0; the CI agents-read job installs it itself). Not containerized, to avoid bumping the 3.10 test image.
 	@echo "==> test-agents-read: scanning AGENTS.md with the installed hermes-agent threat scanner"
 	@AR=; for py in python3.12 python3.11; do \
@@ -260,6 +266,6 @@ uninstall: ## Remove ONLY the launcher + symlinks in ~/bin (leaves the venv AND 
 help:
 	@echo "Targets:" \
 		"install (venv+launcher+symlink+smoke), venv-install, link, smoke,"
-	@echo "         test-unit, test-install, test-health (endpoint answers 'hi'), test,"
+	@echo "         test-unit, test-agents-e2e (real agent e2e), test-install, test-health (endpoint answers 'hi'), test,"
 	@echo "         download-test-model, openspec-validate, openspec-new/status,"
 	@echo "         loop (chained runner), loop-harness, chained, uninstall"

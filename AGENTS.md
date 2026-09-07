@@ -1,5 +1,9 @@
 # Project Instructions for Hermes Agent in llama-ai
 
+MUST: follow this file over habit and memory.
+NEVER: skip these rules to be “helpful.”
+If unsure, ask before acting.
+
 You are working in a small, self-contained repository that serves GGUF models
 locally via llama.cpp's `llama-server`. This file defines the agent's durable
 workflow. Follow it for any change.
@@ -543,6 +547,17 @@ also run the check **on the host with the actual GPU (Metal)** and record it:
 
 ## Makefile targets (source of truth)
 
+**All verification — locally and in CI — MUST run through the Makefile, never by
+hand-running `pytest`/`nerdctl`/the container directly.** This is unconditional:
+every stage (lint, unit, install, health, top-tier, **e2e**, openspec) is invoked
+via `make <target>` both on the host loop and in the GitHub Actions jobs, so the
+command executed is byte-identical in CI and locally. A Python test that exists
+with no corresponding `make` target to drive it is a defect; a CI job that calls
+`pytest` (or any tool) directly instead of `make <target>` is a defect. The e2e
+tests (`tests/*_e2e*.py`) are ALWAYS run by the `test-agents-e2e` make target,
+and the CI `dispatch-e2e` job invokes exactly that target — never a bare pytest
+path.
+
 Each verification step is an independent target; `make loop`/`loop-harness`
 chains them all.
 
@@ -555,6 +570,12 @@ chains them all.
 - `make lint` — linefeed lint: fail closed if any tracked text file lacks a trailing newline.
 - `make lint-fix` — append the missing trailing newline to tracked text files.
 - `make test-unit` — hermetic unit tests only (no `~/bin`/`~/models` needed).
+- `make test-agents-e2e` — REAL agent-spawn e2e (issue #63): runs ONLY
+  `tests/*_e2e*.py` via a glob. A fake worker does README issue-work, a hung
+  worker is killed+respawned, and the README wording is asserted — all in <1 min,
+  no GitHub API/LLM/network. Wired into CI as the `dispatch-e2e` job AND the
+  loop-harness `agents-e2e` stage. **Must always be run through `make`, never by
+  invoking the e2e pytest file directly.**
 - `make test-install` — host install tests (verify installed launcher runs a model).
 - `make test-health` — **end-to-end**: launch the tiny model from `~/bin`, answer
   `"hi"` on `/v1/chat/completions`, assert a healthy reply.
