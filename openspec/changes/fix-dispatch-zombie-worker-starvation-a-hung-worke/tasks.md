@@ -5,7 +5,7 @@
 - [x] 2. Implement activity-based liveness in `scripts/watchloop_dispatch.py`:
       - add `STUCK_LOG_STALE_SECONDS` (default 2400) + `log_stale_seconds(branch_log, now) -> float|None`;
       - add `worker_is_stuck(live_pid, branch_log, now) -> bool` (alive AND log stale; dead/missing-log → not stuck);
-      - add `kill_process_tree(pid)` + `_children_of(pid)` (kill bash parent + descendants, /proc+pgrep robust);
+      - add `kill_process_tree(pid)` + `_children_of(pid)` (kill bash parent + descendants via the single `pgrep -P` walk);
       - in `_spawn_worker_for_branch`: live-but-stuck → kill tree + remove lock + respawn; live+fresh log → skip;
         dead PID → existing issue #18 path unchanged.
 - [x] 3. Add hermetic tests `TestStuckWorkerResume` (Given/When/Then-marked, no skips):

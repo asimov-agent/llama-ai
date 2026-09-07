@@ -345,31 +345,15 @@ def pid_alive(pid: int) -> bool:
 
 
 def _children_of(pid: int) -> list[int]:
-    """Child PIDs of *pid*, robust across Linux CI (/proc) and macOS (pgrep)."""
-    kids: list[int] = []
-    # /proc/<pid>/stat -> "pid (comm) state ppid ..." — robust in the Linux test
-    # container (root sees all procs; no external binary needed).
-    try:
-        proc_root = "/proc"
-        if os.path.isdir(proc_root):
-            for entry in os.listdir(proc_root):
-                if not entry.isdigit():
-                    continue
-                try:
-                    with open(f"{proc_root}/{entry}/stat") as f:
-                        parts = f.read()
-                    # comm may contain spaces/parens: split AFTER first ')'
-                    rpar = parts.rindex(")")
-                    fields = parts[rpar + 2 :].split()
-                    if fields and fields[1] == str(pid):  # state, ppid
-                        kids.append(int(entry))
-                except (OSError, ValueError, IndexError):
-                    continue
-    except OSError:
-        pass
-    if kids:
-        return kids
-    # Fallback: pgrep -P (macOS host / anywhere no /proc).
+    """Child PIDs of *pid* via `pgrep -P` — the single code path.
+
+    `pgrep -P <pid>` lists the DIRECT children of *pid*; the recursive walk in
+    `kill_process_tree` descends the whole tree. Both the macOS host and the Linux
+    CI test container ship `/usr/bin/pgrep`, so this one invocation is sufficient
+    everywhere — there is deliberately no second /proc implementation (AGENTS.md:
+    no dual paths for the same resource). A missing/unrunnable pgrep yields no
+    children and the caller simply gives up killing that branch.
+    """
     try:
         out = subprocess.run(
             ["pgrep", "-P", str(pid)], capture_output=True, text=True

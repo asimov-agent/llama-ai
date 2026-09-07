@@ -29,7 +29,8 @@ never died, so all three issues starved indefinitely.
    stuck (a freshly-started worker with no flush yet must not be killed).
 3. **On stuck, kill + resume.** In `_spawn_worker_for_branch`, replace the live-PID skip with the health
    predicate. When a live worker is found stuck, `kill_process_tree(live_pid)` removes it (its own bash
-   parent + every descendant), the stale `.running` lock is removed, and the normal orphan spawn issues
+   parent + every descendant, via the single `pgrep -P` child-walk — no second /proc implementation,
+   per the no-fallback rule), the stale `.running` lock is removed, and the normal orphan spawn issues
    a fresh worker that resumes the issue from its own log.
 4. **Tolerate the slow backend.** The threshold is based on *no log growth*, not wall-clock age since
    spawn, so a single slow `llm-local` call (~170 s) or a large-model download that still flushes
