@@ -229,6 +229,8 @@ make loop              # == make loop-harness: run ALL stages in order, GREEN ga
 make test-image        # build the test image (python+pytest+deps + CPU llama-server)
 make lint              # linefeed/editorconfig lint (fail-closed)
 make test-unit         # hermetic unit tests (all files, incl. openspec-tasks-check)
+make test-agents-e2e   # REAL agent-spawn e2e: runs ONLY *_e2e*.py — fake worker does README
+                       # issue-work, hung worker is killed+respawned (issue #63); <1 min
 make test-install      # install tests (run in-container; host-artifact asserts — no skips via test-install-ci)
 make test-install-ci   # REAL install tests, NO SKIPS: make install + model + assert in ONE container
 make test-install-host # verify the REAL host install: ~/bin/llama-ai + symlinks + ~/models (runs on host)

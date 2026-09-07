@@ -47,6 +47,23 @@ jobs:
         run: make test-clean
 
   # ------------------------------------------------------------------
+  # dispatch-e2e: REAL agent-spawn end-to-end (issue #63) — drives the actual
+  # dispatcher spawn/kill/respawn against a fake worker that does README
+  # issue-work, asserted. Runs in <1 minute via make test-agents-e2e (only
+  # tests/*_e2e*.py). No GitHub API / no LLM / no network.
+  # ------------------------------------------------------------------
+  dispatch-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build test image
+        run: make test-image
+      - name: make test-agents-e2e (real dispatcher spawn/reclaim, README issue-work)
+        run: make test-agents-e2e
+      - name: Prune orphaned test containers
+        run: make test-clean
+
+  # ------------------------------------------------------------------
   # install: REAL host-install tests (make test-install-ci) — performs a real
   # `make install` + seeds a model + asserts the artifacts, all in ONE container.
   # NO SKIPS: a missing prerequisite fails the job loudly, it never silently skips.

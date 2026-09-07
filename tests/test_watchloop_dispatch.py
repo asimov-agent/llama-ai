@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -158,6 +159,115 @@ class TestSpawnWorkerLock:
         assert len(spawned) == 1, f"expected 1 worker spawned, got {len(spawned)}"
         lk = tmp_path / "worker-feat_race.running"
         assert lk.read_text().strip() == str(os.getpid())
+
+
+# --------------------------------------------------------------------------- #
+# issue #63: activity-based worker liveness (a hung-but-ALIVE PID is reclaimed)
+class TestStuckWorkerResume:
+    """A live PID with a STALE log is killed+respawned; a fresh log is untouched.
+
+    Mirrors the TestSpawnWorkerLock stubbing style (temp RUN/LOGS/REPO, fake
+    subprocess, monkeypatched ensure_worktree). `kill_process_tree` is stubbed to
+    record the PID so no real process is ever killed in a hermetic test.
+    """
+
+    @staticmethod
+    def _touch_log(logs: Path, slug: str, age_seconds: float) -> Path:
+        log = logs / f"feat-{slug}.log"
+        log.write_text("progress\n")
+        os.utime(log, (time.time() - age_seconds, time.time() - age_seconds))
+        return log
+
+    def test_live_pid_with_fresh_log_not_killed(self, tmp_path, monkeypatch):
+        """Given a freshly-written log, an alive worker is left untouched."""
+
+        # Given a dispatcher bound to temp paths and a stubbed kill/spawn
+        monkeypatch.setattr(wd, "RUN", str(tmp_path))
+        monkeypatch.setattr(wd, "LOGS", str(tmp_path / "logs"))
+        monkeypatch.setattr(wd, "REPO", str(tmp_path))
+        (tmp_path / "logs").mkdir()
+        spawned: list = []
+        killed: list[int] = []
+        monkeypatch.setattr(wd, "ensure_worktree", lambda *a, **k: f"{tmp_path}/wt")
+        monkeypatch.setattr(wd, "subprocess", _FakeSubprocess(spawned))
+        monkeypatch.setattr(wd, "kill_process_tree", lambda pid: killed.append(pid))
+        monkeypatch.setattr(wd, "STUCK_LOG_STALE_SECONDS", 10)
+
+        # And a live (current) PID whose own log is only a second old (fresh)
+        self._touch_log(tmp_path / "logs", "active", age_seconds=1)
+        lk = tmp_path / "worker-feat_active.running"
+        lk.write_text(str(os.getpid()))
+
+        # When the tick evaluates the lock
+        wd.spawn_worker({"number": 101, "title": "active"})
+
+        # Then it is neither killed nor respawned, and the lock is preserved
+        assert killed == [], f"active worker must NOT be killed, got {killed}"
+        assert spawned == [], f"active worker must NOT be respawned, got {spawned}"
+        assert lk.exists(), "active worker's lock must be preserved"
+
+    def test_live_pid_with_stale_log_is_killed_and_respawned(self, tmp_path, monkeypatch):
+        """A hung worker (alive PID, stale log) is killed, lock removed, respawned."""
+
+        # Given a dispatcher bound to temp paths and a stubbed kill/spawn
+        monkeypatch.setattr(wd, "RUN", str(tmp_path))
+        monkeypatch.setattr(wd, "LOGS", str(tmp_path / "logs"))
+        monkeypatch.setattr(wd, "REPO", str(tmp_path))
+        (tmp_path / "logs").mkdir()
+        spawned: list = []
+        killed: list[int] = []
+        monkeypatch.setattr(wd, "ensure_worktree", lambda *a, **k: f"{tmp_path}/wt")
+        monkeypatch.setattr(wd, "subprocess", _FakeSubprocess(spawned))
+        monkeypatch.setattr(wd, "kill_process_tree", lambda pid: killed.append(pid))
+        monkeypatch.setattr(wd, "STUCK_LOG_STALE_SECONDS", 10)
+
+        # And a live PID whose own log is WAY past the stale threshold
+        self._touch_log(tmp_path / "logs", "hung", age_seconds=wd.STUCK_LOG_STALE_SECONDS + 100)
+        lk = tmp_path / "worker-feat_hung.running"
+        lk.write_text(str(os.getpid()))
+
+        # When the tick evaluates the lock of the hung worker
+        wd.spawn_worker({"number": 102, "title": "hung"})
+
+        # Then the tree is killed, the stale lock removed, and a fresh worker spawned
+        assert killed == [os.getpid()], f"hung worker must be killed, got {killed}"
+        assert len(spawned) == 1, f"hung worker must be respawned, got {spawned}"
+        assert lk.read_text().strip() == "4242", "lock must hold the fresh worker PID"
+
+    def test_stuck_detection_uses_log_growth_not_wall_clock(self, tmp_path, monkeypatch):
+        """Stuck keys off the LAST log write, not the worker's age since spawn."""
+
+        # Given a stale threshold and a log whose last write was only 5s ago
+        monkeypatch.setattr(wd, "STUCK_LOG_STALE_SECONDS", 10)
+        log = tmp_path / "feat-clock.log"
+        log.write_text("x")
+        os.utime(log, (time.time() - 5, time.time() - 5))
+
+        # When an ALIVE pid with that log is checked
+        # Then it is NOT stuck — the predicate reads the log's mtime (recency of
+        # the LAST write), never a wall-clock spawn age
+        assert wd.worker_is_stuck(os.getpid(), str(log), now=time.time()) is False
+
+    def test_dead_pid_path_unchanged(self, tmp_path, monkeypatch):
+        """The dead-PID resume path (issue #18) is untouched by the stuck logic."""
+        monkeypatch.setattr(wd, "RUN", str(tmp_path))
+        monkeypatch.setattr(wd, "LOGS", str(tmp_path / "logs"))
+        monkeypatch.setattr(wd, "REPO", str(tmp_path))
+        (tmp_path / "logs").mkdir()
+        spawned: list = []
+        killed: list[int] = []
+        monkeypatch.setattr(wd, "ensure_worktree", lambda b, s: f"{tmp_path}/wt/{s}")
+        monkeypatch.setattr(wd, "subprocess", _FakeSubprocess(spawned))
+        monkeypatch.setattr(wd, "kill_process_tree", lambda pid: killed.append(pid))
+
+        # A dead (impossible) PID, no log -> must use the issue #18 clean path.
+        lk = tmp_path / "worker-feat_gone.running"
+        lk.write_text("999999999")
+
+        wd.spawn_worker({"number": 103, "title": "gone"})
+        assert killed == [], "a DEAD pid must use the clean path, not the kill path"
+        assert len(spawned) == 1, "a DEAD pid must still be respawned"
+        assert lk.exists()
 
 
 class _FakeSubprocess:
