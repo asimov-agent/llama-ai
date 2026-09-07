@@ -1,5 +1,9 @@
 # Project Instructions for Hermes Agent in llama-ai
 
+MUST: follow this file over habit and memory.
+NEVER: skip these rules to be “helpful.”
+If unsure, ask before acting.
+
 You are working in a small, self-contained repository that serves GGUF models
 locally via llama.cpp's `llama-server`. This file defines the agent's durable
 workflow. Follow it for any change.
