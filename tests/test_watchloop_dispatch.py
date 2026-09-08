@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -702,6 +703,125 @@ class TestTickDedup:
         b1 = wd._current_tick()
         assert b1.startswith("tick-")
         assert wd._current_tick() == b1  # stable within the interval
+
+    # ------------------------------------------------------------------ #
+    # issue #62: the read -> decide -> write of TICK_LOCK is atomic, so a
+    # double cron-fire can never let BOTH processes run main().
+    # ------------------------------------------------------------------ #
+    def test_concurrent_reclaim_single_winner(self, tmp_path, monkeypatch):
+        """Two processes racing on an OLDER-bucket lock -> exactly ONE wins.
+
+        # Given an OLD-bucket tick lock (a finished prior interval),
+        # When   many threads call _tick_lock_acquire() concurrently,
+        # Then   exactly ONE returns True (the winner),
+        # And    every other thread returns False (dedup, never a second tick),
+        # And    TICK_LOCK ends recording the winner's current bucket + pid.
+        """
+        self._patch(tmp_path, monkeypatch)
+
+        # Given a stale OLDER-bucket lock every racer starts from.
+        (tmp_path / "dispatch.tick.lock").write_text("tick-0\n999999999\n")
+        bucket = wd._current_tick()
+
+        # When N threads race on the atomic reclaim at the same instant.
+        n = 8
+        results = []
+        barrier = threading.Barrier(n)
+        lock = threading.Lock()
+
+        def racer():
+            barrier.wait()  # release every thread at the same moment
+            won = wd._tick_lock_acquire()
+            with lock:
+                results.append(won)
+
+        threads = [threading.Thread(target=racer) for _ in range(n)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        # Then exactly one winner, the rest dedup.
+        assert sum(1 for r in results if r is True) == 1, (
+            "exactly one concurrent reclaim may win, got "
+            f"{sum(1 for r in results if r is True)} winners"
+        )
+        # And the lock ends recording the winner's current bucket.
+        assert wd._read_lock_owner()[0] == bucket
+
+    def test_meta_lock_is_short_lived_not_durable(self, tmp_path, monkeypatch):
+        """The meta-lock is released after the write; durability lives in the
+        recorded bucket, NOT the meta-lock (issues #27/#30).
+
+        # Given a process has won the tick and written TICK_LOCK(bucket,pid),
+        # When   a same-interval re-fire arrives AFTER the winner released the
+        #        meta-lock (and even after the winner 'exited' -> dead pid),
+        # Then   the re-fire still dedups on the recorded bucket,
+        # And    the mere existence of the meta-lock file does not decide dedup.
+        """
+        self._patch(tmp_path, monkeypatch)
+
+        # Given the first invocation won and wrote the lock, then finished.
+        assert wd._tick_lock_acquire() is True
+        bucket = wd._current_tick()
+
+        # When the winner has exited (its pid is now dead) -- rewrite the lock
+        # to a dead pid to simulate the finished same-bucket owner.
+        (tmp_path / "dispatch.tick.lock").write_text(f"{bucket}\n999999999\n")
+
+        # The meta-lock file exists (short-lived) but is NOT what dedups.
+        assert (tmp_path / "dispatch.tick.lock.meta").exists()
+
+        # Then a same-interval re-fire still dedups on the recorded bucket.
+        assert wd._tick_lock_acquire() is False, (
+            "durability must come from the recorded bucket, not the meta-lock"
+        )
+
+    def test_busy_meta_lock_skips_never_runs(self, tmp_path, monkeypatch, capsys):
+        """If the atomic decision cannot be taken, the tick is SKIPPED (dedup),
+        never run a second time -- NO 'busy => run anyway' fallback.
+
+        # Given the meta-lock decision budget is exhausted (cannot take it),
+        # When   _tick_lock_acquire() is called,
+        # Then   it returns False (skip/dedup) and does NOT write TICK_LOCK,
+        # And    the caller (main) would log [DEDUP], not `tick start`.
+        """
+        self._patch(tmp_path, monkeypatch)
+
+        # Given the meta-lock can never be taken (bounded budget exhausted).
+        monkeypatch.setattr(wd, "_tick_meta_lock", lambda: None)
+
+        # When we attempt to acquire.
+        won = wd._tick_lock_acquire()
+
+        # Then it dedups (False) and never creates the durable lock.
+        assert won is False, "an untakable atomic decision must skip, never run"
+        assert not (tmp_path / "dispatch.tick.lock").exists(), (
+            "a skipped tick must not write TICK_LOCK"
+        )
+        out = capsys.readouterr().out
+        assert "DEDUP" in out, f"expected a DEDUP log, got {out!r}"
+
+    def test_no_fallback_run_anyway_branch(self, tmp_path, monkeypatch):
+        """There is exactly ONE acquisition path: the atomic meta-lock decision.
+
+        # Given the module defines _tick_lock_acquire,
+        # When   we inspect its source,
+        # Then   it gates the read/decide/write on the atomic meta-lock
+        #        (_tick_meta_lock()) and, on a None result, returns False
+        #        (skip) -- there is NO 'if busy then run anyway' fallback.
+        """
+        self._patch(tmp_path, monkeypatch)
+        import inspect
+
+        # Given the acquire source.
+        text = inspect.getsource(wd._tick_lock_acquire)
+
+        # When/Then it gates the decision on the atomic meta-lock and the
+        # untakable case dedups (returns False), never runs a second tick.
+        assert "_tick_meta_lock()" in text, "acquire must gate on the atomic meta-lock"
+        assert "meta_fd is None" in text, "untakable meta-lock must be handled"
+        assert "return False" in text, "untakable meta-lock must dedup, not run"
 
 
 # --------------------------------------------------------------------------- #

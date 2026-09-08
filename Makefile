@@ -127,7 +127,16 @@ openspec-shell: ## Interactive shell into the repo with the openspec CLI
 # build). Bare `run` (like the openspec targets) avoids compose's `--tty`
 # console requirement under non-interactive make.
 TEST_IMG := llama-ai/test:latest
-TEST_OPTS := --rm -u root -v "$(REPO)":/repo:rw -w /repo -e HOME=/root
+# A git WORKTREE stores its metadata in the PARENT repo's .git/worktrees/<name>
+# dir; mounting only the worktree at /repo leaves `git ls-files` broken inside
+# the container (it can't resolve the gitdir), which fails the hermetic lint
+# regression tests. Detect a worktree (`.git` is a FILE, not a dir) and also
+# mount the parent repo at its real path so `git` works. A normal checkout (CI)
+# has `.git` as a DIR -> GIT_WORKTREE_PARENT is empty -> no extra mount, so CI
+# is byte-identical to before.
+GIT_WORKTREE_PARENT := $(shell sed -nE 's|^gitdir: +||p' .git 2>/dev/null | sed 's|/.git/worktrees/.*||')
+WORKTREE_MOUNT := $(if $(GIT_WORKTREE_PARENT),-v "$(GIT_WORKTREE_PARENT)":$(GIT_WORKTREE_PARENT):rw,)
+TEST_OPTS := --rm -u root -v "$(REPO)":/repo:rw -w /repo -e HOME=/root $(WORKTREE_MOUNT)
 TEST_RUN := $(RUNTIME) run $(TEST_OPTS) $(TEST_IMG)
 
 test-image: ## Build the containerized test image (copies compiled requirements into context)
