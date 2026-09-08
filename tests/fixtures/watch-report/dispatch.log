@@ -1,0 +1,6 @@
+[dispatch 21:00:00] tick start
+[dispatch 21:00:03]   issue#61: PR in flight, no spawn
+[dispatch 21:00:05]   repair-PR#72: spawning worker branch=feat/feat-top-tier-download-top-tier-family-keyword-top
+[dispatch 21:00:06]   PR#72: not approved -> NOT merged
+[dispatch 21:00:07]   [clean] feat-x: not merged (in flight) — keep
+[dispatch 21:00:09] tick done

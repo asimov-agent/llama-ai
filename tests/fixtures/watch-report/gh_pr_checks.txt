@@ -1,0 +1,7 @@
+cpu-health	pass	5m42s	https://example.invalid/job1
+dispatch-e2e	pass	6m0s	https://example.invalid/job2
+install	pass	5m1s	https://example.invalid/job3
+lint	pass	5m23s	https://example.invalid/job4
+openspec	pass	25s	https://example.invalid/job5
+top-tier	fail	7m4s	https://example.invalid/job6
+unit	pass	6m2s	https://example.invalid/job7
