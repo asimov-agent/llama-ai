@@ -38,6 +38,19 @@ WATCHLINE_RE = re.compile(
 )
 
 
+def _crontab_cmd() -> list[str]:
+    """The crontab binary to invoke.
+
+    Honors `CRONTAB_CMD` (e.g. a path to a fake `crontab` shim) so CI and hermetic
+    tests can drive the real make targets against a sandboxed crontab without ever
+    touching the host's live crontab. Falls back to `crontab` on PATH.
+    """
+    override = os.environ.get("CRONTAB_CMD", "").strip()
+    if override:
+        return override.split()
+    return ["crontab"]
+
+
 def _platform() -> str:
     """Return the normalized platform name; injectable via env for hermetic tests."""
     return os.environ.get("_WATCHLOOP_TEST_PLATFORM") or platform.system().lower()
@@ -87,9 +100,9 @@ def render_entry(python_bin: str | None = None) -> str:
 def _current_lines() -> list[str]:
     """Read the current crontab as a list of lines (empty list => no crontab/error)."""
     try:
-        out = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+        out = subprocess.run([*_crontab_cmd(), "-l"], capture_output=True, text=True)
     except OSError:
-        print("ERROR: `crontab` binary not found on PATH.", file=sys.stderr)
+        print("ERROR: `crontab` binary not found on PATH (set CRONTAB_CMD to override).", file=sys.stderr)
         return []
     if out.returncode != 0:
         # `crontab -l` returns non-zero when no crontab exists yet (some platforms);
@@ -103,7 +116,7 @@ def _write_lines(lines: list[str]) -> None:
     text = "\n".join(lines)
     if text and not text.endswith("\n"):
         text += "\n"
-    subprocess.run(["crontab", "-"], input=text, text=True, capture_output=True)
+    subprocess.run([*_crontab_cmd(), "-"], input=text, text=True, capture_output=True)
 
 
 def install(dry_run: bool = False) -> int:

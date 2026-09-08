@@ -162,3 +162,67 @@ class TestPerOSCommand:
         # Then it references a plain `python3`
         assert cron.DISPATCHER in entry
         assert entry.endswith("2>&1")
+
+
+class TestMakeTargetsViaFakeCrontab:
+    """Drive the REAL `make cron-*` targets against a fake crontab shim.
+
+    Uses scripts/install_watchloop_cron.py's CRONTAB_CMD override so the make
+    layer (cron-install / cron-uninstall / cron-snapshot) is exercised end-to-end
+    without touching a real crontab. This is what the CI `cron` job runs.
+    """
+
+    FIXTURE = str(Path(__file__).parent / "fixtures" / "fake-crontab.sh")
+
+    def _run_make(self, target, env):
+        import subprocess
+        e = dict(os.environ); e.update(env)
+        return subprocess.run(["make", target], capture_output=True, text=True, env=e)
+
+    def test_install_uninstall_roundtrip_through_make(self, tmp_path, monkeypatch):
+        """make cron-install (x2, idempotent) then cron-uninstall, via fake crontab."""
+
+        # Given a fake crontab with one unrelated seeded line
+        fake = tmp_path / "fake-crontab"
+        fake.write_text("seed an unrelated line\n")
+        env = {
+            "CRONTAB_CMD": self.FIXTURE,
+            "FAKE_CRONTAB_FILE": str(fake),
+            "WATCHLOOP_CRON_PYTHON": "/opt/homebrew/bin/python3",
+        }
+
+        # When I run `make cron-install` twice
+        r1 = self._run_make("cron-install", env)
+        r2 = self._run_make("cron-install", env)
+        content = fake.read_text()
+
+        # Then exactly one watch-line is present, unrelated line preserved
+        n_watch = sum(1 for ln in content.splitlines() if cron.WATCHLINE_RE.search(ln))
+        assert n_watch == 1, f"expected 1 watch line, got {n_watch}: {content}"
+        assert "already present" in r2.stdout, "2nd install must be a no-op"
+
+        # When I run `make cron-uninstall`
+        r3 = self._run_make("cron-uninstall", env)
+
+        # Then the watch line is gone and the unrelated line is preserved
+        after = fake.read_text()
+        assert not any(cron.WATCHLINE_RE.search(ln) for ln in after.splitlines())
+        assert "seed an unrelated line" in after
+
+    def test_snapshot_through_make(self, tmp_path, monkeypatch):
+        """make cron-snapshot renders the entry (no mutation)."""
+
+        # Given a fake crontab path
+        fake = tmp_path / "fake-crontab"
+        env = {
+            "CRONTAB_CMD": self.FIXTURE,
+            "FAKE_CRONTAB_FILE": str(fake),
+            "WATCHLOOP_CRON_PYTHON": "/opt/homebrew/bin/python3",
+        }
+
+        # When I run `make cron-snapshot`
+        r = self._run_make("cron-snapshot", env)
+
+        # Then the rendered entry is in the output and no file was written
+        assert cron.DISPATCHER in r.stdout
+        assert not fake.exists(), "snapshot must not write the crontab"
