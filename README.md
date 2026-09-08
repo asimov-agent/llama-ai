@@ -292,6 +292,14 @@ durable rulebook) that, each tick:
   a PR against `main` that references the issue.
 - **Keeps the issue body, OpenSpec change, and code in sync** (bidirectional,
   continuous).
+- **Reclaims only genuinely dead or long-silent workers.** Each worker writes a
+  spawn-wrapper heartbeat line to its own `feat-<slug>.log` every
+  `WORKER_LOG_HEARTBEAT_SECONDS` (default 5 min) while its hermes child is alive, so
+  the loop's liveness check never mistakes a productive-but-slow worker for a hung
+  one (`hermes chat` buffers all stdout until it exits — it never streams mid-run).
+  A worker is only reclaimed as stuck after its log has been silent for
+  `STUCK_LOG_STALE_SECONDS` (default 4 h, far beyond the heartbeat cadence), and a
+  worker whose process has exited is reclaimed immediately via the dead-PID path.
 
 The durable rules and the exact crontab entry live in `AGENTS.md` (the
 "Background watch loop" section); the loop prompt and its output log are

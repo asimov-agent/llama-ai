@@ -749,6 +749,35 @@ class TestWorkerModelConfig:
         assert "-m deepseek/fast" in cmd, cmd
         assert "--provider openrouter" in cmd, cmd
 
+    def test_spawn_command_embeds_heartbeat_loop(self, tmp_path, monkeypatch):
+        """The worker launch cmd heartbeats the log so a live worker is never
+        falsely stuck (issue #69) — hermes -Q buffers stdout until exit, so the
+        spawn-wrapper heartbeat (not hermes streaming) advances the liveness log."""
+        monkeypatch.setattr(wd, "RUN", str(tmp_path))
+        monkeypatch.setattr(wd, "LOGS", str(tmp_path / "logs"))
+        monkeypatch.setattr(wd, "REPO", str(tmp_path))
+        (tmp_path / "logs").mkdir()
+        captured = {}
+        class FakeP:
+            pid = 4242
+        class FakeSub:
+            def Popen(self, argv, **kw):
+                captured["cmd"] = argv[2]
+                return FakeP()
+        monkeypatch.setattr(wd, "subprocess", FakeSub())
+        monkeypatch.setattr(wd, "ensure_worktree", lambda *a, **k: f"{tmp_path}/wt")
+        monkeypatch.setattr(wd, "WORKER_MODEL", "")
+        monkeypatch.setattr(wd, "WORKER_PROVIDER", "")
+        wd.spawn_worker({"number": 1, "title": "m"})
+        cmd = captured["cmd"]
+        # Then the launch backgrounds hermes and appends a heartbeat to the log
+        # every WORKER_LOG_HEARTBEAT_SECONDS while the hermes child is alive.
+        assert str(wd.WORKER_LOG_HEARTBEAT_SECONDS) in cmd, cmd
+        assert ">> " in cmd and "2>&1 &\n" in cmd, cmd
+        assert "kill -0" in cmd, cmd
+        assert "[hb %s]" in cmd, cmd
+        assert f">> {tmp_path}/logs/feat-m.log" in cmd, cmd
+
 
 # --------------------------------------------------------------------------- #
 # pre-spawn worker-model probe (issue #37): skip cleanly when local server down

@@ -104,13 +104,30 @@ LOCAL_PROVIDERS = {"", "localhost", "custom", "llama.cpp"}
 # can resolve to IPv6 ::1 inside some host setups), matching the serving config.
 LOCAL_MODEL_URL = "http://127.0.0.1:11434/v1/models"
 
-# Activity-based worker liveness (issue #63). A worker whose PID is alive but whose
-# own log has NOT grown for this many seconds is considered STUCK (hung, not dead):
-# its process tree is killed and the issue is re-driven from its own log. Defaults
-# to two 20-min dispatch intervals (40 min), tolerating a single slow `llm-local`
-# call (~170s) and a large-model download that still flushes progress. Injection
+# Activity-based worker liveness (issue #63, refined by issue #69). A worker whose
+# PID is alive but whose own log has NOT grown for this many seconds is considered
+# STUCK (hung, not dead): its process tree is killed and the issue is re-driven
+# from its own log.
+#
+# issue #69 refinement: this horizon must be LONG (hours), because hermes chat
+# `-Q`/`--oneshot` buffers ALL its stdout until the process EXITS — it never streams
+# mid-run. A productive-but-slow worker (OpenSpec -> implement -> validate -> test ->
+# push -> PR on the slow local `llm-local`) legitimately stays silent on its log for
+# well over the old 40-min window, so a short horizon killed healthy workers every
+# tick before they could commit. Liveness is instead guaranteed by the spawn-wrapper
+# heartbeat (WORKER_LOG_HEARTBEAT_SECONDS below), which advances the worker's log
+# every few minutes WHILE its hermes child is alive; a worker therefore only reaches
+# this silence when its heartbeat has stopped (the process tree is gone/wedged).
+# Dead-PID reclaim (issue #18) already handles an exited tree immediately. Injection
 # point for hermetic tests.
-STUCK_LOG_STALE_SECONDS = int(os.environ.get("STUCK_LOG_STALE_SECONDS", "2400"))
+STUCK_LOG_STALE_SECONDS = int(os.environ.get("STUCK_LOG_STALE_SECONDS", "14400"))
+
+# Spawn-wrapper heartbeat cadence (issue #69). The worker launch command runs hermes
+# in the background and appends a `[hb <epoch>]` line to the worker's own log every
+# this-many seconds as long as the hermes child is alive. Because hermes -Q buffers
+# stdout until exit, this heartbeat is what makes a live worker's log advance, so the
+# stuck detector above never mistakes a productive-but-slow worker for a hung one.
+WORKER_LOG_HEARTBEAT_SECONDS = int(os.environ.get("WORKER_LOG_HEARTBEAT_SECONDS", "300"))
 
 
 def effective_provider_is_local() -> bool:
@@ -807,12 +824,32 @@ def _spawn_worker_for_branch(branch: str, slug: str, wd: str, branch_log: str,
     prompt_file = f"{RUN}/worker-{branch.replace('/', '_')}.prompt"
     with open(prompt_file, "w") as f:
         f.write(prompt)
+    # The worker log is this worker's liveness signal (issue #63/#69): the stuck
+    # detector reclaims a live worker whose log has not grown for
+    # STUCK_LOG_STALE_SECONDS. hermes chat -Q/--oneshot buffers ALL its stdout until
+    # process exit (never streaming mid-run), so we launch hermes in the background
+    # and a heartbeat loop appends a `[hb <epoch>]` line to the log every
+    # WORKER_LOG_HEARTBEAT_SECONDS as long as the hermes child is alive. A live,
+    # productive worker's log therefore advances every few minutes and can never
+    # reach the (hours-long) stuck horizon; only when the child/wrapper tree dies or
+    # wedges does the log go silent and the issue get re-driven. The recorded PID is
+    # this wrapper bash, which stays alive until hermes exits, so kill_process_tree
+    # on it (issue #63) still kills the whole tree.
+    model_flag = f"-m {WORKER_MODEL} " if WORKER_MODEL else ""
+    provider_flag = f"--provider {WORKER_PROVIDER} " if WORKER_PROVIDER else ""
     cmd = (
-        f"cd {wd} && HERMES_PROFILE=project-manager {HERMES} chat "
+        f"cd {wd}\n"
+        f"HERMES_PROFILE=project-manager {HERMES} chat "
         f"--query-file {prompt_file} -t terminal,file,web --yolo -Q "
-        f"{f'-m {WORKER_MODEL} ' if WORKER_MODEL else ''}"
-        f"{f'--provider {WORKER_PROVIDER} ' if WORKER_PROVIDER else ''}"
-        f">> {branch_log} 2>&1"
+        f"{model_flag}{provider_flag}"
+        f">> {branch_log} 2>&1 &\n"
+        f"CHILD=$!\n"
+        f"while kill -0 \"$CHILD\" 2>/dev/null; do\n"
+        f"  sleep {WORKER_LOG_HEARTBEAT_SECONDS}\n"
+        f"  printf '[hb %s]\\n' \"$(date +%s)\" >> {branch_log} 2>/dev/null || break\n"
+        f"done\n"
+        f"wait \"$CHILD\"\n"
+        f"exit $?\n"
     )
     log(f"  {log_prefix}: spawning worker branch={branch} log={branch_log}")
     proc = subprocess.Popen(["/bin/bash", "-lc", cmd], env=dict(os.environ))
