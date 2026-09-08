@@ -177,9 +177,20 @@ def fmt_now() -> str:
 
 def main() -> None:
     window = 60
+    watchloop_dir = None
     for i, a in enumerate(sys.argv):
         if a == "--window" and i + 1 < len(sys.argv):
             window = int(sys.argv[i + 1])
+        elif a == "--watchloop" and i + 1 < len(sys.argv):
+            watchloop_dir = Path(sys.argv[i + 1])
+
+    # --watchloop <dir> lets CI (and tests) point the report at a fixture
+    # .watchloop tree instead of the real (gitignored, host-only) one.
+    if watchloop_dir is not None:
+        global LOGS, RUN, DISPATCH_LOG
+        LOGS = watchloop_dir / "logs"
+        RUN = watchloop_dir / "run"
+        DISPATCH_LOG = RUN / "dispatch.log"
 
     print("=" * 78)
     print(f"WATCH-LOOP STATUS REPORT   ({fmt_now()})")

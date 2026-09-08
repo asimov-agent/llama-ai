@@ -285,8 +285,8 @@ cron-uninstall: ## Remove ONLY the watch-loop host crontab entry (preserves unre
 cron-snapshot: ## Preview the watch-loop crontab entry (no changes)
 	@python3 scripts/install_watchloop_cron.py snapshot
 
-watch-report: ## Human-readable watch-loop status report (host-side, reads .watchloop logs + live gh state; WINDOW=N sets dispatch-log window)
-	@python3 scripts/watch_report.py $(if $(WINDOW),--window $(WINDOW),)
+watch-report: ## Human-readable watch-loop status report (host-side, reads .watchloop logs + live gh state; WINDOW=N sets dispatch-log window, WATCHLOOP=<dir> points at a fixture .watchloop tree)
+	@python3 scripts/watch_report.py $(if $(WINDOW),--window $(WINDOW),) $(if $(WATCHLOOP),--watchloop $(WATCHLOOP),)
 
 help:
 	@echo "Targets:" \

@@ -78,6 +78,37 @@ jobs:
         run: make test-clean
 
   # ------------------------------------------------------------------
+  # watch-report: exercise the REAL make watch-report target end-to-end
+  # against a FAKE .watchloop tree + a FAKE gh shim (mirrors the cron job's
+  # fake-crontab pattern). No real loop data / no GitHub token / no network.
+  # Asserts the command exits 0 and prints the report sections.
+  # ------------------------------------------------------------------
+  watch-report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: make watch-report (fixture .watchloop + fake gh shim)
+        run: |
+          set -eu
+          # Point PATH at the fake gh shim so watch_report's `gh` calls return
+          # fixture JSON without a real token or network.
+          mkdir -p "$HOME/fakebin"
+          cp tests/fixtures/watch-report/fake-gh.sh "$HOME/fakebin/gh"
+          chmod +x "$HOME/fakebin/gh"
+          export PATH="$HOME/fakebin:$PATH"
+          export WATCH_REPORT_FIXTURE_ROOT="$PWD"
+          # Run the real make target against the fixture .watchloop tree.
+          out="$(make watch-report WATCHLOOP="$PWD/tests/fixtures/watch-report")"
+          # Assert the report produced its sections from the fixtures.
+          printf '%s\n' "$out"
+          echo "$out" | grep -q "## LIVE GitHub state" || { echo "FAIL: missing GitHub state section"; exit 1; }
+          echo "$out" | grep -q "## Worker sessions" || { echo "FAIL: missing Worker sessions section"; exit 1; }
+          echo "$out" | grep -q "## Dispatcher timeline" || { echo "FAIL: missing Dispatcher timeline section"; exit 1; }
+          echo "$out" | grep -q "## CI-red reaction" || { echo "FAIL: missing CI-red reaction section"; exit 1; }
+          echo "$out" | grep -q "1 FAIL" || { echo "FAIL: expected the fixture's 1 failing CI check to be surfaced"; exit 1; }
+          echo "WATCH-REPORT MAKE-TARGET OK: command runs and prints all sections"
+
+  # ------------------------------------------------------------------
   # dispatch-e2e: REAL agent-spawn end-to-end (issue #63) — drives the actual
   # dispatcher spawn/kill/respawn against a fake worker that does README
   # issue-work, asserted. Runs in <1 minute via make test-agents-e2e (only

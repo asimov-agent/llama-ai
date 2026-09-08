@@ -390,6 +390,11 @@ make watch-report            # default: last 60 dispatch.log lines
 make watch-report WINDOW=200 # wider dispatcher window
 ```
 
+`make watch-report` is **exercised in CI** by the `watch-report` job, which runs
+the real target against a committed fixture `.watchloop` tree + a fake `gh`
+shim (no real loop data, token, or network) and fails if any report section is
+missing or the command errors.
+
 It answers three questions:
 
 1. **What work did the cron agents do?** — each worker session found in

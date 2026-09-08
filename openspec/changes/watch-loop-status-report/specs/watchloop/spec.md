@@ -54,14 +54,46 @@ failing CI).
 
 ### Requirement: report is host-side and parameterized
 The report MUST run on the host (no container, nothing to provision) and accept
-a window parameter controlling how many `dispatch.log` lines are analyzed.
+a window parameter controlling how many `dispatch.log` lines are analyzed, plus
+a `--watchloop <dir>` override pointing it at a fixture `.watchloop` tree (used
+by CI and tests so the command is exercised without the host-only real loop
+data).
 
 WHEN the report runs with no arguments, THEN it analyzes a default window of the
 most recent 60 `dispatch.log` lines; WHEN run with `--window N`, THEN it
-analyzes the most recent N lines.
+analyzes the most recent N lines; WHEN run with `--watchloop <dir>`, THEN it
+reads `.watchloop`-shaped data from `<dir>` (fixtures) instead of the repo's
+real `.watchloop`.
 
 #### Scenario: default and custom windows
 - **Given** `scripts/watch_report.py` exists,
 - **When** run with no window argument,
 - **Then** it uses the default window of 60 lines,
 - **And** when run with `--window 200` it uses 200 lines.
+
+#### Scenario: fixture .watchloop override
+- **Given** a directory containing `.watchloop`-shaped fixture data (a `logs/`
+  dir and a `run/dispatch.log`),
+- **When** the report runs with `--watchloop <that dir>`,
+- **Then** it reads the worker logs and dispatch timeline from `<that dir>`
+  instead of the repo's real `.watchloop`,
+- **And** the report still prints all sections (used by CI/tests without real
+  loop data).
+
+### Requirement: the make target is exercised in CI
+`make watch-report` MUST be executed by a CI job (against fixture `.watchloop`
+data and a fake `gh` shim on PATH) so the actual command — not just its unit
+tests — is gate-checked and fails CI if it errors.
+
+WHEN the CI `watch-report` job runs, THEN it puts a fixture `gh` shim on PATH,
+sets `WATCH_REPORT_FIXTURE_ROOT`, runs `make watch-report WATCHLOOP=<fixtures>`,
+and asserts the output contains all four report sections and the fixture's
+failing-CI signal; any missing section or non-zero exit fails the job.
+
+#### Scenario: watch-report CI job asserts sections
+- **Given** the fixture `.watchloop` tree and fake `gh` shim are committed,
+- **When** the CI `watch-report` job runs `make watch-report` against them,
+- **Then** the job passes only if the report exits 0,
+- **And** prints `## LIVE GitHub state`, `## Worker sessions`,
+  `## Dispatcher timeline`, and `## CI-red reaction`,
+- **And** surfaces the fixture's failing CI check.
