@@ -124,3 +124,30 @@ def test_check_all_specific_change(tmp_path):
 
 def test_check_all_missing_change_returns_failure(tmp_path):
     assert CT.check_all("does-not-exist", base=tmp_path, verbose=False) == 1
+
+
+def test_scoping_check_to_one_change_misses_unticked_in_another(tmp_path):
+    """Regression for the CI-gate gap (issue #69/#70): the openspec CI job used to
+    run `openspec-tasks-check NAME=ci-pipeline`, which scopes the scan to a single
+    always-present change. A feature PR that adds its OWN new change (with unticked
+    `- [ ]` tasks) was therefore never scanned, and CI stayed green.
+
+    Prove the fix: checking only a named 'clean' change returns 0 (the OLD, broken
+    CI behaviour), but the ALL-ACTIVE scan (no NAME — what the openspec CI job now
+    runs) returns 1 because the unticked task in the OTHER change is seen.
+    """
+    # Given a repo with one clean change and one new change carrying an unticked task
+    _make_change(tmp_path, "ci-pipeline", "- [x] structural smoke\n")
+    _make_change(tmp_path, "feat-my-feature", "- [x] done\n- [ ] push + open PR\n")
+
+    # When the scan is scoped to just the always-present change (old CI wiring)
+    scoped = CT.check_all("ci-pipeline", base=tmp_path, verbose=False)
+
+    # Then it wrongly reports clean (this is how an unticked PR task slipped through)
+    assert scoped == 0, "a NAME-scoped check must NOT see another change's unticked task"
+
+    # When the scan covers ALL active changes (the corrected CI job: no NAME)
+    all_active = CT.check_all(base=tmp_path, verbose=False)
+
+    # Then the unticked task in the feature's own change fails the gate
+    assert all_active == 1, "the all-active scan must flag the feature change's unticked task"

@@ -143,8 +143,14 @@ jobs:
         run: make openspec-image
       - name: make openspec-validate
         run: make openspec-validate NAME=ci-pipeline
-      - name: Assert all tasks checked (fails on unchecked `- [ ]`)
-        run: make openspec-tasks-check NAME=ci-pipeline
+      # Scan ALL active OpenSpec changes, not just NAME=ci-pipeline. A feature PR
+      # introduces its OWN new change dir under openspec/changes/<name>; scoping
+      # this check to a single always-present change (ci-pipeline) would let a PR
+      # land with unticked `- [ ]` tasks in its own change and CI stay green.
+      # check_openspec_tasks.py with no NAME walks every active change, so a PR
+      # that adds an incomplete change fails RED here.
+      - name: Assert all active changes have all tasks checked (fails on any unchecked `- [ ]`)
+        run: make openspec-tasks-check
       - name: Prune orphaned test containers
         run: make test-clean
 

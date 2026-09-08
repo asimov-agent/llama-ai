@@ -11,5 +11,9 @@
 - [x] Existing e2e tests (`tests/test_watchloop_dispatch_e2e.py`) pass
 - [x] `make lint`, `make test-unit`, `make openspec-validate` green
 - [x] README watch-loop section reflects heartbeat-based liveness
-- [ ] Commit + push `feat/fix-dispatch-stuck-detector-false-liveness`, open PR
+- [x] Fix the openspec CI job to scan ALL active changes (not just `NAME=ci-pipeline`)
+      so a PR's own new change with unticked tasks fails RED
+- [x] Add a regression test proving a NAME-scoped check misses another change's
+      unticked task while the all-active scan catches it
+- [x] Commit + push `feat/fix-dispatch-stuck-detector-false-liveness`, open PR
       referencing issue #69

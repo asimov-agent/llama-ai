@@ -53,5 +53,12 @@ And     a productive worker (heartbeat every 5 min) can never reach that silence
 ### Verification: B2
 - New unit test asserts the spawn command embeds the heartbeat loop and
   `WORKER_LOG_HEARTBEAT_SECONDS`.
+### Verification: B3 (CI-gate hardening)
+- `test_check_openspec_tasks.py::test_scoping_check_to_one_change_misses_unticked_in_another`:
+  a NAME-scoped `openspec-tasks-check` (the old CI wiring) misses an unticked task in a
+  feature PR's own change, while the all-active scan (no NAME — what the openspec CI job now
+  runs) returns 1. Guards against re-introducing the CI gap that let #69's unticked task pass.
 ### Regression
 - `make lint`, `make test-unit`, `make openspec-validate`; CI unit job green.
+- The openspec CI job runs `make openspec-tasks-check` (all active changes), not
+  `NAME=ci-pipeline`, so a PR adding an incomplete change fails RED.
