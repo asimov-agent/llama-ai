@@ -13,8 +13,9 @@ top-tier pipeline — no second code path.
 ### Requirement: F1 — Family keyword matches repos on a word boundary
 WHEN `--download-top-tier --family <keyword>` is used,
 THEN the family repo list contains only repos whose repo id matches the keyword on a
-**word boundary** (case-insensitive; `(?<![a-z0-9])<kw>(?![a-z0-9])`), AND the repo is a
-top-tier family;
+**word boundary** (case-insensitive; `(?<![a-z0-9])<kw>(?![a-z])` — the keyword may be
+followed by a version **digit**, e.g. `qwen2`/`qwen3`, but never by a *letter*, which
+would make it the prefix of a different family), AND the repo is a top-tier family;
 AND repos that merely *contain* the keyword as a substring (e.g. `qwopus`/`qwythos` for
 `qwen`) are excluded.
 

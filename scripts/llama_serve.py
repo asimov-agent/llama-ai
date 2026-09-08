@@ -31,6 +31,7 @@ import sys
 import time
 import urllib.request
 import urllib.error
+import urllib.parse
 
 # ---------------------------------------------------------------------------
 # Interpreter bootstrap: the `gguf`/`numpy` deps live in the 3.10 venv built by
@@ -495,6 +496,57 @@ def _is_top_tier_repo(repo):
     return any(f in rl for f in TOP_TIER_FAMILIES)
 
 
+def _family_keyword_matches(repo, keyword):
+    """Word-boundary family match on the repo id (NOT a plain substring).
+
+    `--family qwen` must match `Qwen/Qwen2.5-0.5B-Instruct-GGUF` and
+    `unsloth/Qwen3.8-27B-GGUF` (the keyword may be followed by a version
+    DIGIT, e.g. `qwen2`/`qwen3`) but NOT a *different* family that starts
+    with the same letters — `Jackrong/Qwopus...`, `empero-ai/Qwythos...`.
+    The keyword must therefore NOT be followed by a letter (that would make
+    it the prefix of another family's name); a trailing digit is a version
+    number and is allowed. Case-insensitive, whole-word prefix:
+    `(?<![a-z0-9])<kw>(?![a-z])`.
+    """
+    kw = (keyword or "").lower()
+    if not kw:
+        return False
+    return re.search(
+        r"(?<![a-z0-9])" + re.escape(kw) + r"(?![a-z])", repo.lower()) is not None
+
+
+def _family_gguf_repos(keyword, limit=300):
+    """All GGUF repos for ONE model family keyword, ranked for family mode.
+
+    Unlike `_trending_gguf_repos` (the global trending WINDOW), family mode
+    needs the COMPLETE family — a niche family has 0-2 repos in the trending
+    slice. So this queries the full model set for the keyword with
+    `filter=gguf&sort=downloads&direction=-1` and NO `sort=trendingScore`,
+    then keeps only word-boundary keyword matches that are top-tier families,
+    ranked trendingScore desc with downloads desc tie-break (trendingScore is
+    sparse — many family repos report 0, so downloads breaks ties honestly).
+    Returns the same dict shape as `_trending_gguf_repos`.
+    """
+    url = (f"{HF_API}?search={urllib.parse.quote(keyword)}&filter=gguf"
+           f"&sort=downloads&direction=-1&limit={limit}")
+    data = _hf_get(url)
+    out = []
+    for m in data:
+        rid = m.get("id", "")
+        if not _family_keyword_matches(rid, keyword):
+            continue
+        if not _is_top_tier_repo(rid):
+            continue
+        out.append({
+            "repo": rid,
+            "downloads": m.get("downloads", 0),
+            "likes": m.get("likes", 0),
+            "trendingScore": m.get("trendingScore", 0),
+        })
+    # NEVER trust the wire order: trendingScore desc, downloads desc tie-break.
+    return sorted(out, key=lambda r: (-r["trendingScore"], -r["downloads"]))
+
+
 def _repo_gguf_files(repo):
     """List .gguf files in a repo with real byte sizes (tree API)."""
     url = f"{HF_API}/{repo}/tree/main?recursive=true"
@@ -582,7 +634,8 @@ def _split_repo(repo):
 
 
 def discover_top_tier(limit=10, total_ram_bytes=None, headroom_bytes=None,
-                      min_trending_score=0, per_provider=2, skip_summary=None):
+                      min_trending_score=0, per_provider=2, skip_summary=None,
+                      family=None, family_repos=None):
     """Ranked top-tier GGUF candidates that FIT the card, with real file sizes.
 
     Combines the three signals (trending + top-tier family + fit gate) using the
@@ -595,10 +648,24 @@ def discover_top_tier(limit=10, total_ram_bytes=None, headroom_bytes=None,
        trendingScore, tier_folder, dest_path}
     ranked best-quality first, then trending. `limit` = total candidates to return;
     `min_trending_score` = rating floor.
+
+    `family` (optional keyword): scope discovery to ONE model family. When set,
+    the repo list comes from `_family_gguf_repos(family)` (the COMPLETE family,
+    word-boundary matched) instead of the global trending window, and
+    `min_trending_score` is IGNORED (forced to 0 — a score floor would filter a
+    niche family out entirely). `family_repos` may pre-supply that repo list (so
+    the CLI can print its readout without a second API pass). Everything
+    downstream (fit gate, high+lower per provider, pre-flight probe + refill,
+    placement) is the SAME code. `family=None` is byte-identical to the
+    pre-existing trending path.
     """
     total = total_ram_bytes if total_ram_bytes is not None else read_total_ram_bytes()
     head = headroom_bytes if headroom_bytes is not None else read_current_headroom_bytes(total)
     kv_reserve = 1 * 1024 ** 3  # conservative KV headroom for the fit gate
+    # Family mode: a score floor would filter a niche family out entirely —
+    # force it to 0 (the repo list is already the complete, ranked family).
+    if family is not None:
+        min_trending_score = 0
 
     def candidate_files(repo):
         try:
@@ -632,10 +699,18 @@ def discover_top_tier(limit=10, total_ram_bytes=None, headroom_bytes=None,
     seen_repos = set()
     window = max(limit, 10) * 3
     while len(cands) < limit:
-        repos = _trending_gguf_repos(limit=window)
+        if family is not None:
+            # The complete family list (pre-supplied by the CLI or fetched here),
+            # widened window = prefix of the ranked list for refill passes.
+            if family_repos is not None:
+                repos = family_repos[:window]
+            else:
+                repos = _family_gguf_repos(family, limit=window)
+        else:
+            repos = _trending_gguf_repos(limit=window)
         new_repos = [r for r in repos if r["repo"] not in seen_repos]
         if not new_repos:
-            break  # trending list exhausted (all same) — nothing more to refill with
+            break  # source list exhausted (all seen) — nothing more to refill with
         for repo_info in new_repos:
             seen_repos.add(repo_info["repo"])
             if repo_info["trendingScore"] < min_trending_score:
@@ -692,16 +767,19 @@ def discover_top_tier(limit=10, total_ram_bytes=None, headroom_bytes=None,
     if skip_summary is not None:
         skip_summary.extend(skipped)
     # Rank so a provider's high + lower quants stay together (group by provider).
-    # Order PROVIDERS by what's TRENDING now (highest trendingScore first) — this is
-    # "top-tier trending": the most popular models right now surface first, each with
-    # its high + lower quant. (NOT by file size, which would surface the biggest file
-    # of a niche provider over a genuinely trending one.)
+    # Order PROVIDERS by what's TRENDING now (highest trendingScore first,
+    # downloads desc tie-break — trendingScore is sparse, so downloads breaks
+    # ties honestly), each with its high + lower quant. (NOT by file size, which
+    # would surface the biggest file of a niche provider over a genuinely
+    # trending one.)
     cands.sort(key=lambda c: (c["repo"], -c["size_gb"]))              # group by provider, high first
     providers = {}
     for c in cands:
         providers.setdefault(c["repo"], []).append(c)
     ordered = []
-    for repo in sorted(providers, key=lambda r: -providers[r][0]["trendingScore"]):
+    for repo in sorted(providers,
+                       key=lambda r: (-providers[r][0]["trendingScore"],
+                                      -providers[r][0]["downloads"])):
         ordered.extend(providers[repo])
     return ordered[:limit]
 
@@ -830,6 +908,8 @@ def stop_server_on_port(port):
 def _main_download_top_tier(args):
     """Discover + download currently-trending top-tier GGUFs that fit the card.
 
+    --family  -> scope discovery to ONE model family (top providers of that
+                 family, word-boundary matched) instead of global trending.
     --list   -> print the ranked candidates that fit, then exit (no download).
     --dry    -> download nothing; just report what would be downloaded/served.
     default  -> download the top `--count` candidates that fit, then serve the
@@ -837,22 +917,53 @@ def _main_download_top_tier(args):
     """
     limit = max(1, args.count)
     per_provider = max(1, args.per_provider or 2)   # high + lower quant per provider
+    family = getattr(args, "family", None)
     print(f"[top-tier] detecting memory on the actual card ...")
     total = read_total_ram_bytes()
     head = read_current_headroom_bytes()
     print(f"[top-tier] total RAM = {total/(1024**3):.0f} GB, headroom (wired+safety) = "
           f"{head/(1024**3):.1f} GB")
+    # Family mode: a word-boundary keyword scopes the SAME pipeline to ONE family.
+    # Zero matching repos is a loud failure (typo / non-GGUF family), never a
+    # silent success.
+    family_readout = ""
+    family_repos = []
+    if family:
+        family_repos = _family_gguf_repos(family, limit=300)
+        n_files = 0
+        for r in family_repos:
+            try:
+                n_files += len(_repo_gguf_files(r["repo"]))
+            except SystemExit:
+                pass  # an unlistable repo contributes 0 files; discovery will skip it
+        family_readout = (f"[family] {family} → {len(family_repos)} providers "
+                          f"({n_files} files) match")
+        print(family_readout, flush=True)
+        if not family_repos:
+            print(f"[top-tier] no GGUF repos found for family '{family}'. "
+                  "Nothing downloaded.", file=sys.stderr)
+            sys.exit(1)
     # `--count` = number of PROVIDERS; each yields per_provider quants (high+lower).
     skip_summary = []  # (repo, reason) for gated/dead repos dropped pre-flight
     cands = discover_top_tier(limit=max(1, limit * per_provider),
                               total_ram_bytes=total, headroom_bytes=head,
                               min_trending_score=args.min_trending_score,
-                              per_provider=per_provider, skip_summary=skip_summary)
+                              per_provider=per_provider, skip_summary=skip_summary,
+                              family=family,
+                              family_repos=(family_repos if family else None))
     if not cands:
-        print("[top-tier] no trending top-tier GGUF model fits the available card right now. "
-              "Nothing downloaded.")
+        if family:
+            print(f"[top-tier] no model from family '{family}' fits the available card "
+                  "right now. Nothing downloaded.")
+        else:
+            print("[top-tier] no trending top-tier GGUF model fits the available card right now. "
+                  "Nothing downloaded.")
         return
-    total_str = f"top {limit} trending top-tier models that fit {total/(1024**3):.0f} GB:"
+    if family:
+        total_str = (f"top {limit} providers of family '{family}' "
+                     f"that fit {total/(1024**3):.0f} GB:")
+    else:
+        total_str = f"top {limit} trending top-tier models that fit {total/(1024**3):.0f} GB:"
     if args.list:
         print(f"\n{total_str}\n")
         for i, c in enumerate(cands, 1):
@@ -986,6 +1097,12 @@ def main():
                     help="with --download-top-tier: only consider repos whose HF trendingScore "
                          "is >= this (0 = any trending that fits). A rating floor so niche/"
                          "unrated models don't show.")
+    ap.add_argument("--family", type=str, default=None,
+                    help="with --download-top-tier: scope to ONE model family keyword "
+                         "(e.g. 'qwen', 'ornith') — download the top --count providers of "
+                         "THAT family (word-boundary match, so 'qwen' never matches "
+                         "'qwopus'/'qwythos'), each with high + lower quants. "
+                         "--min-trending-score is ignored in family mode.")
     args = ap.parse_args()
 
     # --download-top-tier path (trending + top-tier family + dynamic fit gate).

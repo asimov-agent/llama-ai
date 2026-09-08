@@ -1044,3 +1044,356 @@ def test_skip_summary_line_empty_no_suffix():
     # Then  it returns '' (so the completion line has no skip suffix)
     assert llama_ai._skip_summary_line([]) == ""
     assert llama_ai._skip_summary_line(None) == ""
+
+
+# ---------------------------------------------------------------------------
+# --family: top providers of ONE model family (issue #61)
+# ---------------------------------------------------------------------------
+G = 1024 ** 3
+
+# Deterministic fake qwen family for the family-mode pipeline tests: 5 clean
+# member repos (real-ish GGUF sizes), a substring trap that must be dropped, a
+# gated repo (probe -> access-denied), and providers at different trending
+# scores / download counts. Wire order is deliberately scrambled so discovery
+# must re-rank.
+FAMILY_QWEN_REPOS = [
+    {"repo": "Qwen/Qwen2.5-7B-Instruct-GGUF", "downloads": 5000000, "likes": 900,
+     "trendingScore": 200},
+    {"repo": "unsloth/Qwen3.8-27B-GGUF", "downloads": 1000000, "likes": 400,
+     "trendingScore": 120},
+    {"repo": "bartowski/Qwen3.8-27B-GGUF", "downloads": 400000, "likes": 150,
+     "trendingScore": 120},
+    {"repo": "orcarouter/Qwen3.8-27B-Uncensored-GGUF", "downloads": 284000, "likes": 72,
+     "trendingScore": 120},        # gated (probe -> access-denied): skipped + refilled
+    {"repo": "maddes/Another-Qwen-GGUF", "downloads": 90000, "likes": 30,
+     "trendingScore": 10},
+    {"repo": "Qwen/Qwen2.5-0.5B-Instruct-GGUF", "downloads": 700000, "likes": 100,
+     "trendingScore": 5},          # refill provider (low trend)
+]
+
+FAMILY_QWEN_FILES = {
+    "Qwen/Qwen2.5-7B-Instruct-GGUF": [
+        ("qwen2.5-7b-instruct-q8_0.gguf", 7.5),
+        ("qwen2.5-7b-instruct-q4_0.gguf", 4.7),
+    ],
+    "unsloth/Qwen3.8-27B-GGUF": [
+        ("Qwen3.8-27B-Q8_0.gguf", 29.0),
+        ("Qwen3.8-27B-Q5_K_M.gguf", 17.0),
+        ("Qwen3.8-27B-IQ2_XXS.gguf", 8.0),    # low-fidelity: never picked
+        ("mmproj-Qwen3.8-27B-f16.gguf", 0.5),  # projector: never picked
+    ],
+    "bartowski/Qwen3.8-27B-GGUF": [("Qwen3.8-27B-Q8_0.gguf", 29.0)],
+    "orcarouter/Qwen3.8-27B-Uncensored-GGUF": [
+        ("Qwen3.8-27B-Uncensored-Q8_0.gguf", 29.0)],
+    "maddes/Another-Qwen-GGUF": [
+        ("another-qwen-Q6_K.gguf", 12.0),
+        ("another-qwen-Q4_K_M.gguf", 8.5),
+    ],
+    "Qwen/Qwen2.5-0.5B-Instruct-GGUF": [
+        ("qwen2.5-0.5b-instruct-q4_0.gguf", 4.5),
+    ],
+}
+
+
+def _install_family_mocks(monkeypatch, repos, files_by_repo,
+                          probe_result=("ok",)):
+    """Point the family-search + file-listing + probe seams at deterministic fakes.
+
+    `repos` is returned verbatim as the family repo list (already what the real
+    `_family_gguf_repos` would have produced — word-boundary filtered, ranked).
+    The word-boundary filter itself is covered separately by
+    `test_family_gguf_repos_word_boundary_and_ranking`.
+    """
+    def fake_family(keyword, limit=300):
+        assert keyword == "qwen"
+        return [dict(r) for r in repos][:limit]
+
+    def fake_files(repo):
+        return [{"path": name, "size_bytes": int(gb * G), "size_gb": gb}
+                for name, gb in files_by_repo.get(repo, [])]
+
+    def fake_probe(repo, filename, timeout=15, probe_bytes=65536):
+        if isinstance(probe_result, dict):
+            return probe_result.get(repo, "ok")
+        return probe_result
+
+    monkeypatch.setattr(llama_ai, "_family_gguf_repos", fake_family)
+    monkeypatch.setattr(llama_ai, "_repo_gguf_files", fake_files)
+    monkeypatch.setattr(llama_ai, "_probe_file_downloadable", fake_probe)
+
+
+def test_family_keyword_matches_word_boundary():
+    """Story: the family keyword matches on a word boundary, NOT substring.
+
+    Given  repos for the `qwen` family search — including `Qwen2.5`/`Qwen3.8`
+           (keyword followed by a version DIGIT) and the traps `qwopus`/`qwythos`
+           (different families starting with the same letters),
+    When   `_family_keyword_matches` classifies them,
+    Then   the Qwen repos match, and NO trap matches.
+    """
+    # Given real + trap repo ids from the live qwen family
+    qwen_members = ["unsloth/Qwen3.8-27B-GGUF",
+                    "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
+                    "unsloth/Qwen3-27B-GGUF"]
+    traps = ["Jackrong/Qwopus3.8-27B-Flash-GGUF", "empero-ai/Qwythos-9B",
+             "foo/qwenix-GGUF", "qwq/other-family"]
+
+    # When each is word-boundary matched against the keyword `qwen`
+
+    # Then members match; traps (and other families) do not
+    for rid in qwen_members:
+        assert llama_ai._family_keyword_matches(rid, "qwen"), f"{rid} must match"
+    for rid in traps:
+        assert not llama_ai._family_keyword_matches(rid, "qwen"), \
+            f"{rid} must NOT match --family qwen"
+    assert not llama_ai._family_keyword_matches("x/y", ""), "empty kw never matches"
+
+
+def test_family_gguf_repos_word_boundary_and_ranking(monkeypatch):
+    """Story: `_family_gguf_repos` queries the FULL model set (filter=gguf,
+    sort=downloads — NOT the trending slice), drops substring traps, keeps only
+    top-tier families, and ranks trendingScore desc with downloads desc.
+
+    Given  a mocked HF search response with traps, a non-top-tier repo, and
+           out-of-order members,
+    When   `_family_gguf_repos('qwen')` runs,
+    Then   the URL is the family search (no sort=trendingScore), the traps are
+           dropped, and the survivors are ranked (trend desc, downloads desc).
+    """
+    # Given a scrambled, trap-laden HF search response
+    seen_urls = []
+
+    def fake_hf_get(url, timeout=30):
+        seen_urls.append(url)
+        return [
+            {"id": "Jackrong/Qwopus3.8-27B-Flash-GGUF", "downloads": 999999,
+             "likes": 999, "trendingScore": 500},   # substring trap
+            {"id": "empero-ai/Qwythos-9B", "downloads": 500000, "likes": 200,
+             "trendingScore": 39},                   # substring trap
+            {"id": "some/podcast-clip-audio", "downloads": 999999, "likes": 999,
+             "trendingScore": 999},                  # not a top-tier family
+            {"id": "orcarouter/Qwen3.8-27B-Uncensored-GGUF", "downloads": 284000,
+             "likes": 722, "trendingScore": 123},
+            {"id": "unsloth/Qwen3.8-27B-GGUF", "downloads": 10200000, "likes": 3526,
+             "trendingScore": 284},
+            {"id": "ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF", "downloads": 297000,
+             "likes": 354, "trendingScore": 320},
+        ]
+
+    monkeypatch.setattr(llama_ai, "_hf_get", fake_hf_get)
+
+    # When the family repo list is built for keyword `qwen`
+    result = llama_ai._family_gguf_repos("qwen", limit=25)
+
+    # Then the query is the family search (downloads sort, no trending sort)
+    assert seen_urls and "filter=gguf" in seen_urls[0], seen_urls
+    assert "sort=downloads" in seen_urls[0] and "direction=-1" in seen_urls[0]
+    assert "trendingScore" not in seen_urls[0].split("sort=")[1]
+    # traps are dropped (word boundary) and the non-top-tier repo is dropped
+    ids = [r["repo"] for r in result]
+    assert all("qwopus" not in i and "qwythos" not in i for i in ids), ids
+    assert all("podcast" not in i for i in ids), ids
+    # ranked trendingScore desc, downloads desc tie-break
+    assert ids == [
+        "ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF",   # trend 320
+        "unsloth/Qwen3.8-27B-GGUF",               # trend 284
+        "orcarouter/Qwen3.8-27B-Uncensored-GGUF",  # trend 123
+    ], f"family ranking wrong: {ids}"
+    for r in result:
+        assert r["downloads"] > 0 and r["likes"] > 0
+
+
+def test_family_scope_mocked(monkeypatch):
+    """Story: `--family qwen` downloads the top providers of ONE family.
+
+    Given  a deterministic fake qwen family (5 clean member repos with
+           real-ish GGUF sizes, a gated repo, and providers at different
+           trending scores / download counts),
+    When   family-mode discovery runs on a mocked 48 GB card with --count 5,
+    Then   high+lower per provider, gated skip+refill, provider-aware
+           placement, and ranking all hold.
+    """
+    # Given the fake family wired into the network seams, a 48 GB card,
+    #        and a gated repo
+    probe = {"orcarouter/Qwen3.8-27B-Uncensored-GGUF": "access-denied"}
+    _install_family_mocks(monkeypatch, FAMILY_QWEN_REPOS, FAMILY_QWEN_FILES,
+                          probe_result=probe)
+    total = 48 * G
+    head = 3 * G
+    skip_summary = []
+
+    # When family-mode discovery runs (--family qwen, --count 5, per_provider 2)
+    cands = llama_ai.discover_top_tier(limit=5 * 2, total_ram_bytes=total,
+                                       headroom_bytes=head, min_trending_score=0,
+                                       per_provider=2, skip_summary=skip_summary,
+                                       family="qwen")
+
+    # Then 1. scope: only family-member repos appear — no substring trap leaked
+    for c in cands:
+        assert "qwopus" not in c["repo"].lower(), \
+            f"substring trap qwopus matched: {c['repo']}"
+        assert "qwythos" not in c["repo"].lower(), \
+            f"substring trap qwythos matched: {c['repo']}"
+    # Then 2. high+lower per provider: unsloth yields Q8 AND clearly-lower Q5,
+    #        never the IQ2, never the mmproj
+    unsloth = [c for c in cands if c["repo"] == "unsloth/Qwen3.8-27B-GGUF"]
+    assert len(unsloth) == 2, f"unsloth must yield high+lower, got {unsloth}"
+    sizes = [c["size_gb"] for c in unsloth]
+    assert sizes[0] == 29.0 and sizes[1] == 17.0, f"high+lower: {sizes}"
+    assert (sizes[0] - sizes[1]) >= 0.25 * sizes[0], "lower must be clearly lower"
+    for c in cands:
+        assert "iq2" not in c["filename"].lower(), f"IQ2 picked: {c['filename']}"
+        assert not c["filename"].startswith("mmproj"), f"mmproj picked: {c['filename']}"
+    # Then 3. gated skip + refill: orcarouter absent, in the skip summary
+    assert all(c["repo"] != "orcarouter/Qwen3.8-27B-Uncensored-GGUF" for c in cands)
+    assert ("orcarouter/Qwen3.8-27B-Uncensored-GGUF",
+            "Qwen3.8-27B-Uncensored-Q8_0.gguf", "access-denied") in skip_summary
+    # ...and the count refilled from the next fitting provider: 5 distinct
+    #        providers (the 0.5B repo yields no candidate below the MIN floor)
+    repos = {c["repo"] for c in cands}
+    assert len(repos) == 5, f"expected 5 distinct providers, got {sorted(repos)}"
+    # Then 4. placement: every dest_path = <root>/<owner>/<family>/<TierGB>/<file>
+    #        with the correct dynamic tier for the 48 GB card
+    for c in cands:
+        owner, fam = c["repo"].split("/", 1)
+        assert c["dest_path"].endswith(
+            f"/{owner}/{fam}/{c['tier_folder']}/{c['filename']}"), c["dest_path"]
+        assert c["tier_folder"] == llama_ai.pick_tier_folder(c["size_bytes"], total)
+        assert c["tier_folder"] in ("1GB", "2GB", "4GB", "8GB", "16GB", "24GB", "48GB")
+    # Then 5. ranking: providers ordered by trendingScore desc, downloads desc
+    #        tie-break (200 > 120[1M dl] > 120[400k] > 120[284k gated] > 10).
+    #        0.5B (trend 15) produces NO candidates (below MIN_TOP_TIER_GB).
+    order = []
+    for c in cands:
+        if c["repo"] not in order:
+            order.append(c["repo"])
+    assert order == [
+        "Qwen/Qwen2.5-7B-Instruct-GGUF",      # trend 200
+        "unsloth/Qwen3.8-27B-GGUF",           # trend 120, 1.0M downloads
+        "bartowski/Qwen3.8-27B-GGUF",         # trend 120, 400k downloads
+        "maddes/Another-Qwen-GGUF",           # trend 10
+        "Qwen/Qwen2.5-0.5B-Instruct-GGUF",    # trend 5 (refilled after gated skip)
+    ], f"provider ranking wrong: {order}"
+
+
+def test_family_ranking_downloads_tiebreak(monkeypatch):
+    """Story: when two family providers tie on trendingScore, the one with MORE
+    downloads ranks first (trendingScore is sparse — downloads breaks ties)."""
+
+    # Given two family providers with identical trendingScore, different downloads
+    repos = [
+        {"repo": "low/DL", "downloads": 1000, "likes": 1, "trendingScore": 0},
+        {"repo": "high/DL", "downloads": 900000, "likes": 1, "trendingScore": 0},
+    ]
+    files = {"low/DL": [("q8.gguf", 20.0)], "high/DL": [("q8.gguf", 20.0)]}
+    _install_family_mocks(monkeypatch, repos, files)
+
+    # When family-mode discovery returns them
+    cands = llama_ai.discover_top_tier(limit=4, total_ram_bytes=48 * G,
+                                       headroom_bytes=3 * G, min_trending_score=0,
+                                       per_provider=1, family="qwen")
+
+    # Then the higher-downloads provider is ordered first
+    assert [c["repo"] for c in cands] == ["high/DL", "low/DL"], \
+        f"downloads tie-break: {[c['repo'] for c in cands]}"
+
+
+def test_family_min_trending_score_ignored(monkeypatch):
+    """In family mode --min-trending-score is IGNORED: a niche family's repos are
+    mostly unscored (trendingScore 0), and a score floor would filter them all
+    out. Family mode forces the floor to 0."""
+
+    # Given a family of two repos that both report trendingScore 0
+    repos = [
+        {"repo": "a/One", "downloads": 100, "likes": 1, "trendingScore": 0},
+        {"repo": "b/Two", "downloads": 200, "likes": 1, "trendingScore": 0},
+    ]
+    files = {"a/One": [("q8.gguf", 10.0)], "b/Two": [("q8.gguf", 10.0)]}
+    _install_family_mocks(monkeypatch, repos, files)
+
+    # When discovery runs in family mode with a high (would-exclude-all) floor
+    cands = llama_ai.discover_top_tier(limit=4, total_ram_bytes=48 * G,
+                                       headroom_bytes=3 * G, min_trending_score=999,
+                                       per_provider=1, family="qwen")
+
+    # Then the floor is ignored in family mode: both zero-score repos survive
+    assert {c["repo"] for c in cands} == {"a/One", "b/Two"}, \
+        f"min_trending_score must be ignored in family mode: {cands}"
+
+
+def test_family_zero_matches_fails_loudly(monkeypatch, capsys):
+    """Story: an unknown family (typo / non-GGUF) is a loud failure, never a
+    silent success.
+
+    Given  a family keyword with zero matching GGUF repos,
+    When   the CLI's family branch runs,
+    Then   it prints `no GGUF repos found for family '<kw>'` and exits non-zero.
+    """
+    # Given the family search returns nothing (typo'd / non-GGUF family)
+    monkeypatch.setattr(llama_ai, "_family_gguf_repos", lambda kw, limit=300: [])
+
+    # When the CLI dispatches --download-top-tier --family zzz
+    import argparse
+    args = argparse.Namespace(download_top_tier=True, family="zzz", count=5,
+                              per_provider=2, min_trending_score=0, dry=False,
+                              list=False, port=11434)
+
+    # Then it exits non-zero with the clear family message
+    with pytest.raises(SystemExit) as e:
+        llama_ai._main_download_top_tier(args)
+    assert e.value.code == 1, f"unknown family must exit 1, got {e.value.code}"
+    out = capsys.readouterr()
+    assert "no GGUF repos found for family 'zzz'" in (out.out + out.err)
+
+
+def test_family_one_provider_fewer_than_count_honest(monkeypatch):
+    """Story: a family with fewer providers than --count downloads what exists
+    and reports honestly (no crash, no silent padding)."""
+
+    # Given a family with exactly ONE provider but --count 5 requested
+    repos = [{"repo": "solo/Only", "downloads": 500, "likes": 1, "trendingScore": 0}]
+    files = {"solo/Only": [("q8.gguf", 20.0), ("q5.gguf", 13.0)]}
+    _install_family_mocks(monkeypatch, repos, files)
+
+    # When family-mode discovery asks for 5 providers
+    cands = llama_ai.discover_top_tier(limit=5 * 2, total_ram_bytes=48 * G,
+                                       headroom_bytes=3 * G, min_trending_score=0,
+                                       per_provider=2, family="qwen")
+
+    # Then exactly that one provider (with high+lower) is returned — no crash,
+    # no padding, an honest 1/5 the CLI reports as completed 1/1 of candidates
+    assert [c["repo"] for c in cands] == ["solo/Only", "solo/Only"], \
+        f"1-provider family must yield its high+lower only: {[c['repo'] for c in cands]}"
+
+
+def test_discover_family_none_uses_trending(monkeypatch):
+    """Story: WITHOUT --family the code path is unchanged — discovery uses the
+    global trending window (F7: byte-identical to pre-existing behavior)."""
+
+    # Given fakes for BOTH the trending and family seams, each with a marker repo
+    trending_calls, family_calls = [], []
+
+    def fake_trending(limit=25):
+        trending_calls.append(limit)
+        return [{"repo": "trend/Repo", "downloads": 10, "likes": 1,
+                 "trendingScore": 100}]
+
+    def fake_family(keyword, limit=300):
+        family_calls.append(keyword)
+        return [{"repo": "fam/Repo", "downloads": 10, "likes": 1,
+                 "trendingScore": 100}]
+
+    files = {"trend/Repo": [("q8.gguf", 10.0)], "fam/Repo": [("q8.gguf", 10.0)]}
+    _install_family_mocks(monkeypatch, [], files)  # installs _repo_gguf_files+probe
+    monkeypatch.setattr(llama_ai, "_trending_gguf_repos", fake_trending)
+    monkeypatch.setattr(llama_ai, "_family_gguf_repos", fake_family)
+
+    # When discovery runs with family=None (the default, no --family)
+    cands = llama_ai.discover_top_tier(limit=2, total_ram_bytes=48 * G,
+                                       headroom_bytes=3 * G, min_trending_score=0,
+                                       per_provider=1)
+
+    # Then the TRENDING source was used and the family source was NOT touched
+    assert trending_calls, "family=None must use _trending_gguf_repos"
+    assert not family_calls, "family=None must never call _family_gguf_repos"
+    assert [c["repo"] for c in cands] == ["trend/Repo"]

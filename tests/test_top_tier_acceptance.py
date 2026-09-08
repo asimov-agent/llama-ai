@@ -12,6 +12,7 @@ Story style:  Given <starting situation>
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -420,3 +421,136 @@ def test_cli_download_top_tier_dry_run_detailed():
     assert "llama-server" not in out.stderr.lower(), "dry run must not spawn llama-server"
     assert "==> " not in out.stderr.lower() or "llama-server" not in s, \
         "dry run must not start a server"
+
+
+# ---------------------------------------------------------------------------
+# --family: top providers of ONE model family (issue #61)
+# ---------------------------------------------------------------------------
+def test_family_dry_run_known_lowend_one_provider():
+    """Story: the REAL CLI `--download-top-tier --family qwen --count 1 --dry`
+    previews a known low-end family for ONE provider without downloading.
+
+    Given  the real launcher with LLAMA_RAM_BYTES pinned to a small (8 GB) card
+           (so the low-end qwen models fit),
+    When   it runs `--download-top-tier --family qwen --count 1 --dry` (real HF
+           family search, no download because --dry),
+    Then   it exits 0, prints the `[family] qwen ... match` line and the dynamic
+           memory readout, lists at most 1 provider x per_provider(2) = 2
+           candidate rows each `owner/repo -> <TierGB>/<file>`, confirms nothing
+           was downloaded or served, and spawns no server.
+    """
+    _real_hf()
+    env = dict(os.environ)
+    env["LLAMA_RAM_BYTES"] = str(8 * 1024 ** 3)
+    env["LLAMA_HEADROOM_BYTES"] = str(1 * 1024 ** 3)
+    out = subprocess.run([sys.executable, str(REPO / "scripts/llama_serve.py"),
+                          "--download-top-tier", "--family", "qwen",
+                          "--count", "1", "--dry"],
+                         capture_output=True, text=True, timeout=300, env=env)
+    assert out.returncode == 0, f"dry run must exit 0; stderr:\n{out.stderr[-800:]}"
+    s = out.stdout
+    # family readout + dynamic memory readout
+    assert "[family] qwen" in s, f"must print the [family] qwen readout; got:\n{s[-800:]}"
+    assert "match" in s, f"the family readout must report the match count: {s[-400:]}"
+    assert "total RAM" in s, "dry run must print the dynamic total-RAM readout"
+    assert "headroom" in s, "dry run must print the headroom readout"
+    # candidate rows: at most 1 provider x per_provider(2) = 2
+    lines = [ln for ln in s.splitlines() if " -> " in ln and ".gguf" in ln]
+    assert lines, f"dry run must list candidate rows; got:\n{s[-800:]}"
+    assert len(lines) <= 2, f"--count 1 with per-provider 2 => <=2 rows, got {len(lines)}"
+    for ln in lines:
+        assert "/" in ln, f"candidate row must show the provider repo: {ln}"
+        assert ".gguf" in ln, f"candidate row must name the .gguf file: {ln}"
+        assert "GB" in ln, f"candidate row must show size: {ln}"
+        # provider-aware placement: <owner>/<family>/<TierGB>/<file>
+        assert re.search(r"/\d+GB/[^/]+\.gguf$", ln), f"row must end in <TierGB>/<file>: {ln}"
+    # nothing downloaded, no server
+    assert "nothing was downloaded or served" in s, \
+        f"dry run must confirm nothing was downloaded; got:\n{s[-400:]}"
+    assert "llama-server" not in out.stderr.lower(), "dry run must not spawn llama-server"
+
+
+def test_family_real_known_lowend_one_provider(tmp_path):
+    """Story: the smallest live low-end family model downloads for real through the
+    family path (the same `download_top_tier_candidate` the family path calls).
+
+    Given  the LIVE `qwen` family search resolved at test time, and the SMALLEST
+           single-file, non-sharded, non-projector, non-MTP quant (q2..q8) <= 2 GB
+           (expected `Qwen/Qwen2.5-0.5B-Instruct-GGUF::qwen2.5-0.5b-instruct-q4_0.gguf`,
+           ~430 MB),
+    When   it is downloaded for real into a tmp models root via the family path's
+           downloader,
+    Then   the file exists at the provider-aware path with the correct small tier
+           folder, its size is within tolerance of the real HF size (not a stub),
+           its GGUF metadata verifies, and a repeat run is idempotent (same path,
+           no clobber). If the family list empties (HF unreachable / family
+           vanished) the test FAILS loudly — never a skip.
+    """
+    _real_hf()
+    _2 = 2 * 1024 ** 3
+
+    # Given the live qwen family search (loud failure if HF is unreachable)
+    family_repos = llama_ai._family_gguf_repos("qwen", limit=300)
+    assert family_repos, "live qwen family search returned NO repos — HF unreachable or family vanished"
+
+    # When we scan the family for the smallest qualifying low-end file
+    # (single-file .gguf, no shards/projectors/MTP, a q2..q8 quant name, <= 2 GB)
+    best = None  # (size_bytes, repo, path)
+    for r in family_repos:
+        repo = r["repo"]
+        try:
+            files = llama_ai._repo_gguf_files(repo)
+        except SystemExit:
+            continue  # unlistable repo: discovery would skip it too
+        for f in files:
+            fn = os.path.basename(f["path"])
+            if not fn.lower().endswith(".gguf"):
+                continue
+            if ("-multi-of-" in fn or "-00001-of-" in fn or "0000" in fn
+                    or fn.startswith(("mmproj", "Qwen_VL"))
+                    or "mtp-" in fn.lower()):
+                continue  # sharded / projector / MTP companion: not a single file
+            if not re.search(r"(?i)(q[2-8]_)", fn):
+                continue  # must be a q2..q8 quant (not fp16/bf16/IQ1)
+            if f["size_bytes"] > _2:
+                continue  # low-end: <= 2 GB
+            if best is None or f["size_bytes"] < best[0]:
+                best = (f["size_bytes"], repo, fn)
+    assert best is not None, \
+        "no low-end qwen model <= 2 GB found in the live family — loud failure, never a skip"
+    size_bytes, repo, fn = best
+    owner, fam = repo.split("/", 1)
+
+    # When the family path's own downloader fetches it into a tmp models root
+    total = 16 * 1024 ** 3  # deterministic small card (the CI pin)
+    tier = llama_ai.pick_tier_folder(size_bytes, total)
+    tf = str(tmp_path / "models")
+    cand = {
+        "repo": repo,
+        "filename": fn,
+        "size_bytes": size_bytes,
+        "size_gb": size_bytes / (1024 ** 3),
+        "tier_folder": tier,
+        "dest_path": f"{tf}/{owner}/{fam}/{tier}/{fn}",
+    }
+    final = llama_ai.download_top_tier_candidate(dict(cand), models_root=tf)
+
+    # Then the file lands at the provider-aware path with the small tier folder
+    assert Path(final).is_file(), f"downloaded file missing: {final}"
+    assert final == cand["dest_path"], f"file must land at the provider-aware path: {final}"
+    assert f"/{tier}/" in final, f"file must be in the {tier} tier folder: {final}"
+    # its size is within tolerance of the real HF size (a real download, not a stub)
+    got = Path(final).stat().st_size
+    assert got >= size_bytes - (64 * 1024 * 1024), \
+        f"file incomplete: {got/1e9:.3f} GB vs expected {size_bytes/1e9:.3f} GB"
+    assert got <= size_bytes + (64 * 1024 * 1024), \
+        f"file larger than the real HF size: {got/1e9:.3f} GB vs {size_bytes/1e9:.3f} GB"
+    # and its GGUF metadata verifies (the download path already verified; re-check)
+    meta = llama_ai.read_model_meta_fast(final) or llama_ai.read_model_meta(final)
+    assert meta is not None, "the downloaded file must verify as a real GGUF model"
+
+    # When the same model is requested again
+    final2 = llama_ai.download_top_tier_candidate(dict(cand), models_root=tf)
+
+    # Then it is idempotent: same path, no clobber, no error
+    assert final2 == final, "second run must end up at the same file (idempotent)"
