@@ -47,6 +47,37 @@ jobs:
         run: make test-clean
 
   # ------------------------------------------------------------------
+  # cron: exercise the REAL make cron-* targets (issue #67)
+  # Runs make cron-snapshot, then drives make cron-install (x2, idempotency)
+  # and make cron-uninstall against a FAKE crontab (CRONTAB_CMD shim) — so the
+  # make layer is literally executed in CI without touching any real crontab.
+  # ------------------------------------------------------------------
+  cron:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: make cron-snapshot (real make invocation of the cron machinery)
+        run: make cron-snapshot
+      - name: Drive make cron-install/uninstall against a fake crontab shim
+        run: |
+          set -eu
+          export CRONTAB_CMD="$PWD/tests/fixtures/fake-crontab.sh"
+          export FAKE_CRONTAB_FILE="$(mktemp)"
+          echo "seed unrelated line" > "$FAKE_CRONTAB_FILE"
+          # install twice -> exactly one entry (idempotency)
+          make cron-install
+          make cron-install
+          test "$(grep -c '^\*/20' "$FAKE_CRONTAB_FILE")" = "1" || { echo "FAIL: expected exactly 1 */20 line"; exit 1; }
+          grep -q "seed unrelated line" "$FAKE_CRONTAB_FILE" || { echo "FAIL: unrelated line lost"; exit 1; }
+          # uninstall -> watch line gone, unrelated preserved
+          make cron-uninstall
+          if grep -q '^\*/20' "$FAKE_CRONTAB_FILE"; then echo "FAIL: */20 line still present"; exit 1; fi
+          grep -q "seed unrelated line" "$FAKE_CRONTAB_FILE" || { echo "FAIL: unrelated line lost on uninstall"; exit 1; }
+          echo "CRON MAKE-TARGETS OK: install idempotent, uninstall preserves unrelated"
+      - name: Prune orphaned test containers
+        run: make test-clean
+
+  # ------------------------------------------------------------------
   # dispatch-e2e: REAL agent-spawn end-to-end (issue #63) — drives the actual
   # dispatcher spawn/kill/respawn against a fake worker that does README
   # issue-work, asserted. Runs in <1 minute via make test-agents-e2e (only
