@@ -248,6 +248,15 @@ fed into the **same** pipeline, not a second implementation:
   matching GGUF repos prints `no GGUF repos found for family '<kw>'` and exits
   non-zero (typo / non-GGUF family); **fewer** providers than `--count` downloads
   what exists and reports honestly (`downloaded N/M`).
+- **Transient HF API errors are retried** (this applies to the whole top-tier
+  pipeline, trending *and* family). Family mode fans out one HF API call per repo
+  tree (hundreds), so the pipeline retries rate-limits / server blips
+  (HTTP 429/500/502/503/504 and plain network / socket-timeout errors) with
+  bounded exponential backoff that honours `Retry-After`; a **permanent** error
+  (401/403/404) is never retried — it fails fast so a genuinely gated/dead repo is
+  still reported loudly (the skip+refill and "no repos" paths above). Without this
+  retry, a single 429 on one repo tree would silently drop that repo and turn a
+  valid match into a false "no model fits".
 
 Without `--family` the command behaves byte-identically to before (all existing
 top-tier tests pass unmodified).

@@ -48,6 +48,16 @@ SAME `discover_top_tier` → probe → placement → `hf`-CLI download pipeline.
    the parent repo at its real path so `git` resolves inside the container; a
    normal CI checkout has `.git` as a dir so the mount is empty → byte-identical).
    This change **inherits** that fix; it adds no competing lint mechanism.
+7. **Transient HF API retry (F9, root-cause fix for the CI flake):** the family
+   dry-run fans out one HF API call per repo tree (hundreds in family mode).
+   `_hf_get` previously had NO retry, so a single 429 on one repo tree silently
+   dropped that repo — turning a valid match into a false "no model fits" — and a
+   429 on the search call hard-exited the CLI. That is why the CI `top-tier` job
+   was RED on the push run and GREEN on the pull_request run of the SAME commit,
+   minutes apart. `_hf_get` now retries transient errors (429/500/502/503/504 and
+   plain network/socket-timeout) with bounded exponential backoff honouring
+   `Retry-After`, while permanent errors (401/403/404) still fail fast so the F3
+   gated/dead skip path and the F8 "no repos" path are unchanged.
 
 ## What does NOT change
 - `--download-top-tier` **without** `--family` behaves byte-identically to today — all
@@ -66,6 +76,12 @@ is absent the exact existing branch runs.
 ## Verification
 - `test_family_scope_mocked` (hermetic, `make test-unit`): word-boundary scope,
   high+lower per provider, gated skip + refill, placement, ranking, degenerate.
+- `test_hf_get_retries_transient_and_fails_permanent` (hermetic, `make test-unit`):
+  F9 — a transient 429 on an HF API call is retried with backoff until it succeeds, a
+  permanent 404 fails fast on the first attempt (no retry), and a persistent 429 is
+  budget-bounded (never an infinite retry). This is the root-cause fix for the CI
+  flake where the family dry-run's hundreds-of-calls HF fan-out hit a 429 and a single
+  repo's tree call dropped silently, turning a valid match into a false "no model fits".
 - `test_family_dry_run_known_lowend_one_provider` (DRY, `make test-top-tier`): real CLI,
   known low-end family, 1 provider, small card, nothing downloaded.
 - `test_family_real_known_lowend_one_provider` (REAL download, `make test-top-tier`):

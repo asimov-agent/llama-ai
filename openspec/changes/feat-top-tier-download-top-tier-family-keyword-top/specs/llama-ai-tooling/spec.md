@@ -113,11 +113,40 @@ When the family download is attempted,
 Then the message `no GGUF repos found for family '<kw>'` is printed,
 And the exit code is non-zero.
 
+### Requirement: F9 — Transient HF API errors are retried; permanent errors fail fast
+WHEN any top-tier HF API call (search, per-repo tree, or pre-flight probe) is issued
+through `_hf_get`,
+THEN transient failures (HTTP 429/500/502/503/504 and plain network/socket-timeout
+errors) are retried with bounded exponential backoff (honouring `Retry-After`), up to a
+fixed attempt budget, and permanent HTTP errors (401/403/404, …) are NOT retried — they
+fail fast so a genuinely gated/dead repo is still reported loudly (the F3 skip path and
+the F8 "no repos" path rely on that). This is what makes the family dry-run robust to
+the hundreds-of-calls fan-out hitting a rate-limit: a single 429 on one repo tree must
+not silently drop that repo and turn a valid match into a false "no model fits".
+
+#### Scenario: a transient 429 on one call is retried until it succeeds
+Given a transient 429 (rate-limit) response followed by a successful response,
+When `_hf_get` is called,
+Then the 429 is retried with backoff and the eventual successful payload is returned.
+
+#### Scenario: a permanent error fails fast without retry
+Given a permanent HTTP error (e.g. 404 for a dead repo/file),
+When `_hf_get` is called,
+Then it fails fast on the first attempt (no retry) so the caller's gated/dead skip path
+still fires.
+
+#### Scenario: a persistent transient error is budget-bounded
+Given a transient 429 that never clears,
+When `_hf_get` is called,
+Then it stops after the fixed attempt budget and raises (never an infinite retry loop).
+
 ---
 
 ## Verification
 - Hermetic (`make test-unit`): `test_family_scope_mocked` covers F1, F2, F3, F6, F8 and
-  the 1-provider degenerate case; `test_discover_family_none_uses_trending` covers F7.
+  the 1-provider degenerate case; `test_discover_family_none_uses_trending` covers F7;
+  `test_hf_get_retries_transient_and_fails_permanent` covers F9 (transient 429 retried,
+  permanent 404 fails fast, persistent 429 budget-bounded).
 - DRY + real download (`make test-top-tier` / CI top-tier job):
   `test_family_dry_run_known_lowend_one_provider` (F4) and
   `test_family_real_known_lowend_one_provider` (F5).

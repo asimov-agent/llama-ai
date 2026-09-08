@@ -9,6 +9,9 @@ from __future__ import annotations
 import struct
 from pathlib import Path
 
+import io
+import urllib.error
+
 import pytest
 
 import scripts.llama_serve as llama_ai  # noqa: E402  (relocated from root llama_ai.py; importable: gguf+numpy come from the venv)
@@ -1201,6 +1204,101 @@ def test_family_gguf_repos_word_boundary_and_ranking(monkeypatch):
     ], f"family ranking wrong: {ids}"
     for r in result:
         assert r["downloads"] > 0 and r["likes"] > 0
+
+
+def test_hf_get_retries_transient_and_fails_permanent(monkeypatch):
+    """Story: `_hf_get` retries TRANSIENT HF errors with backoff and fails FAST on
+    permanent ones.
+
+    Root cause of the issue #61 CI flake (same commit RED on the push run, GREEN on
+    the pull_request run, minutes apart): the family dry-run fans out one HF API
+    call per repo tree (hundreds), and `_hf_get` had NO retry — so a single 429 on
+    one tree call silently dropped that repo (turning a valid match into a false
+    "no model fits"), while a 429 on the search call itself hard-exited the CLI.
+
+    Given  a mocked urllib.request.urlopen,
+    When   `_hf_get` is called and the first responses are transient,
+    Then   transient errors (429) are retried with backoff until success, a
+           permanent error (404) fails fast on the FIRST try (no retry), and a
+           persistent transient error exhausts the budget and raises SystemExit.
+    """
+    import json as _json
+    from email.message import Message
+
+    class _FakeResponse:
+        """Minimal stand-in for urllib's response: a context manager with read()."""
+        def __init__(self, body: bytes):
+            self._body = body
+        def __enter__(self):
+            return self
+        def __exit__(self, *exc):
+            return False
+        def read(self, *a):
+            return self._body
+
+    def _http_error(code: int, retry_after=None) -> urllib.error.HTTPError:
+        hdrs = Message()
+        if retry_after is not None:
+            hdrs["Retry-After"] = str(retry_after)
+        return urllib.error.HTTPError("https://huggingface.co/api/models", code,
+                                      "err", hdrs, io.BytesIO(b""))
+
+    # no real sleeping in CI — drive the budget/pause via module attributes
+    monkeypatch.setattr(llama_ai, "HF_GET_MAX_ATTEMPTS", 4)
+    monkeypatch.setattr(llama_ai, "HF_GET_BASE_PAUSE", 0.0)
+
+    # --- Given: a transient 429 (twice) that clears on the 3rd call ---
+    calls = {"n": 0}
+
+    def flaky_urlopen(req, timeout=30):
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            raise _http_error(429, retry_after="0")
+        return _FakeResponse(_json.dumps({"ok": True}).encode())
+
+    monkeypatch.setattr(llama_ai.urllib.request, "urlopen", flaky_urlopen)
+
+    # When the transient 429s resolve after retrying
+    got = llama_ai._hf_get("https://huggingface.co/api/models?x")
+
+    # Then it retried through the 429s and returned the payload on the 3rd call
+    assert got == {"ok": True}, got
+    assert calls["n"] == 3, f"expected 3 urlopen calls (2 x 429 + 1 ok), got {calls['n']}"
+
+    # --- Given: a permanent 404 (a genuinely dead repo/file) ---
+    calls2 = {"n": 0}
+
+    def dead_urlopen(req, timeout=30):
+        calls2["n"] += 1
+        raise _http_error(404)
+
+    monkeypatch.setattr(llama_ai.urllib.request, "urlopen", dead_urlopen)
+
+    # When _hf_get hits a permanent error
+    with pytest.raises(SystemExit):
+        llama_ai._hf_get("https://huggingface.co/api/models?dead")
+
+    # Then it failed FAST — exactly one attempt, never retried (F3/#53 skip path
+    # and the F8 "no repos" path rely on permanent errors surfacing immediately)
+    assert calls2["n"] == 1, f"404 must fail fast (1 call), got {calls2['n']}"
+
+    # --- Given: a persistent 429 that never clears ---
+    calls3 = {"n": 0}
+
+    def always429(req, timeout=30):
+        calls3["n"] += 1
+        raise _http_error(429, retry_after="0")
+
+    monkeypatch.setattr(llama_ai.urllib.request, "urlopen", always429)
+
+    # When the retry budget is exhausted
+    with pytest.raises(SystemExit) as e:
+        llama_ai._hf_get("https://huggingface.co/api/models?rate")
+
+    # Then it used EVERY attempt exactly (budget-bounded, never an infinite retry)
+    assert calls3["n"] == llama_ai.HF_GET_MAX_ATTEMPTS, \
+        f"must try exactly HF_GET_MAX_ATTEMPTS times, got {calls3['n']}"
+    assert "still failing after" in str(e.value), str(e.value)
 
 
 def test_family_scope_mocked(monkeypatch):

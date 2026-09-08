@@ -34,3 +34,14 @@
       `make openspec-validate NAME=feat-top-tier-download-top-tier-family-keyword-top` all
       GREEN via the serialized-make lock; commit + push; open PR against `main` referencing
       issue #61.
+- [x] 10. REPAIR (CI flake, issue #61): root-cause the RED `top-tier` CI job — the family
+      dry-run's hundreds-of-calls HF fan-out hit a 429 with NO retry in `_hf_get`, so a
+      single repo's tree call dropped silently ("no model fits" false negative) or the
+      search call hard-exited. Fix: add bounded exponential-backoff retry for transient HF
+      errors (429/500/502/503/504 + network/timeout) in `_hf_get`, permanent errors still
+      fail fast (F3/F8 unchanged). Add hermetic regression
+      `test_hf_get_retries_transient_and_fails_permanent` (F9). Verify: `make lint-fix`,
+      `make lint`, `make test-unit`, `make test-top-tier-cli-ci`,
+      `make openspec-validate NAME=feat-top-tier-download-top-tier-family-keyword-top`
+      GREEN via the serialized-make lock; rebase onto `origin/main`; push; CI `top-tier`
+      job green.

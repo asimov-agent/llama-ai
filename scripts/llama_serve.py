@@ -95,6 +95,14 @@ MIN_TOP_TIER_GB = 4.0          # below this the quant file is treated as a toy/s
 TIER_LADDER_GB = (1, 2, 4, 8, 16, 24, 48, 96, 128, 192, 256, 384, 512, 768, 1024, 1536, 2048, 3072)
 HF_API = "https://huggingface.co/api/models"
 HF_UA = "llama-ai/1.0 (top-tier-download)"
+# Transient HF API failures that _hf_get retries with backoff. 429 = rate-limited,
+# 500/502/503/504 = server-side blips, and a plain URLError (DNS/reset/timeout) is
+# also transient. Permanent errors (401/403/404, etc.) are NOT retried — they fail
+# fast with a clear reason. Env-overridable so hermetic tests can drive it without
+# sleeping (see test_hf_get_retries_transient_and_fails_permanent).
+HF_TRANSIENT_HTTP = (429, 500, 502, 503, 504)
+HF_GET_MAX_ATTEMPTS = int(os.environ.get("HF_GET_MAX_ATTEMPTS", "4"))   # total tries
+HF_GET_BASE_PAUSE = float(os.environ.get("HF_GET_BASE_PAUSE", "1.0"))  # seconds, exponential
 LLAMA_RAM_ENV = "LLAMA_RAM_BYTES"
 LLAMA_HEADROOM_ENV = "LLAMA_HEADROOM_BYTES"
 LLAMA_HEADROOM_MAX_FRAC = 0.45   # max OS reserve as a fraction of total RAM
@@ -453,18 +461,50 @@ def resolve_llama_server():
 def _hf_get(url, timeout=30):
     """GET a HF API url and return parsed JSON (list or dict).
 
-    Raises SystemExit on non-200 so the CLI fails fast with a clear reason
-    rather than silently returning nothing.
+    Transient HF failures are retried with backoff (429 rate-limits, 5xx server
+    blips, and plain network errors / socket timeouts). The top-tier discovery
+    fan-out issues one API call per repo tree (hundreds in family mode), so an
+    unretried 429 on a single call previously dropped that repo from the family
+    list — which could turn a valid "this family has a fitting model" into a false
+    "no model fits", and a 429 on the search call itself hard-exited the CLI
+    (issue #61 CI flake: same commit RED on push, GREEN on pull_request).
+
+    Permanent HTTP errors (401/403/404, ...) are NOT retried — they fail fast so a
+    genuinely gated/dead repo is still reported loudly (the F3/#53 skip path and
+    the F8 "no repos" path rely on that).
+
+    Raises SystemExit immediately on a permanent error, or once the transient
+    retry budget is exhausted.
     """
-    req = urllib.request.Request(url, headers={"User-Agent": HF_UA,
-                                               "Accept": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return json.load(r)
-    except urllib.error.HTTPError as e:
-        raise SystemExit(f"[ERROR] HF API {e.code} for {url}")
-    except urllib.error.URLError as e:
-        raise SystemExit(f"[ERROR] HF API unreachable: {e.reason}")
+    max_attempts = max(1, HF_GET_MAX_ATTEMPTS)
+    for attempt in range(1, max_attempts + 1):
+        req = urllib.request.Request(url, headers={"User-Agent": HF_UA,
+                                                   "Accept": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return json.load(r)
+        except urllib.error.HTTPError as e:
+            if e.code not in HF_TRANSIENT_HTTP:
+                # Permanent (401/403/404/...): fail fast, never retry.
+                raise SystemExit(f"[ERROR] HF API {e.code} for {url}")
+            # Transient (429/5xx): back off + retry, honoring Retry-After if sent.
+            retry_after = (e.headers or {}).get("Retry-After")
+        except urllib.error.URLError:
+            # Plain URLError (DNS, connection reset, socket timeout) = transient.
+            retry_after = None
+        if attempt < max_attempts:
+            pause = HF_GET_BASE_PAUSE * (2 ** (attempt - 1))
+            if retry_after:
+                try:
+                    pause = max(pause, float(retry_after))
+                except (TypeError, ValueError):
+                    pass  # non-numeric Retry-After -> keep the exponential backoff
+            print(f"[top-tier] HF API transient error ({url.split('?')[0]}, "
+                  f"attempt {attempt}/{max_attempts}); retrying in {pause:.1f}s",
+                  file=sys.stderr, flush=True)
+            time.sleep(pause)
+    # Exhausted the retry budget on a transient error.
+    raise SystemExit(f"[ERROR] HF API still failing after {max_attempts} attempts for {url}")
 
 
 def _trending_gguf_repos(limit=25):
