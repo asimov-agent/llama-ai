@@ -705,6 +705,71 @@ class TestTickDedup:
         assert wd._current_tick() == b1  # stable within the interval
 
     # ------------------------------------------------------------------ #
+    # issue #73: the bucket boundary must NOT fall on a cron fire instant.
+    # The cron fires on `*/20` at `:00`/`:20`/`:40`; a naive
+    # `int(time)//1200` puts the boundary at exactly those instants (whole-hour
+    # TZ offset), so a doubled fire straddling the boundary split one slot into
+    # two buckets and the second process reclaimed the first -> both ran main().
+    # Shifting the boundary by TICK_INTERVAL_SECONDS//2 fixes this.
+    # ------------------------------------------------------------------ #
+    def test_doubled_fire_straddling_old_boundary_same_bucket(self, tmp_path, monkeypatch):
+        """Two fires ms apart on OPPOSITE sides of the old //1200 boundary now
+        map to the SAME bucket (issue #73).
+
+        # Given the OLD bucket boundary instant T where int(T) % 1200 == 0,
+        # When   process A fires just before T and process B just after T
+        #        (the same `*/20` slot firing twice),
+        # Then   _current_tick() returns the SAME bucket for both.
+        """
+        self._patch(tmp_path, monkeypatch)
+        # Given an old-boundary instant T that is an exact multiple of 1200.
+        T = 1200 * 1788883
+        # Sanity: under the OLD formula the boundary DOES split T.
+        assert (T - 1) // 1200 != T // 1200, "fixture: old boundary must split"
+        real_time = wd.time.time
+        calls = []
+
+        def fake_time():
+            # first call -> A (just before T); second call -> B (just after T)
+            val = T - 0.001 if len(calls) == 0 else T + 0.001
+            calls.append(val)
+            return val
+
+        monkeypatch.setattr(wd.time, "time", fake_time)
+        bucket_a = wd._current_tick()
+        bucket_b = wd._current_tick()
+        # Then both straddle-fires map to the SAME bucket under the fix.
+        assert bucket_a == bucket_b, (
+            f"straddle fires must share a bucket, got A={bucket_a} B={bucket_b}"
+        )
+
+    def test_doubled_fire_straddle_dedups_not_reclaims(self, tmp_path, monkeypatch):
+        """A same-slot fire that lands just after the old boundary dedups on
+        the recorded bucket instead of reclaiming it (issue #73).
+
+        # Given the OLD boundary instant T with A holding the tick just before T,
+        # When   B (the doubled fire) calls _tick_lock_acquire() just after T,
+        # Then   B returns False (dedup) and does NOT reclaim A's lock,
+        # And    main() runs exactly once for that slot.
+        """
+        self._patch(tmp_path, monkeypatch)
+        T = 1200 * 1788883
+        # Given A wins the tick just before the old boundary.
+        monkeypatch.setattr(wd.time, "time", lambda: T - 0.001)
+        assert wd._tick_lock_acquire() is True
+        assert wd._read_lock_owner()[0] == wd._current_tick()
+        # When B fires just after the old boundary (same slot, doubled fire).
+        monkeypatch.setattr(wd.time, "time", lambda: T + 0.001)
+        # Then B must dedup, not reclaim A's lock.
+        assert wd._tick_lock_acquire() is False, (
+            "a same-slot straddle fire must dedup, not reclaim (both would run main())"
+        )
+        # And the lock still records A's bucket (not overwritten by B).
+        assert wd._read_lock_owner()[0] == f"tick-{T // 1200}", (
+            "B must leave A's bucket lock in place"
+        )
+
+    # ------------------------------------------------------------------ #
     # issue #62: the read -> decide -> write of TICK_LOCK is atomic, so a
     # double cron-fire can never let BOTH processes run main().
     # ------------------------------------------------------------------ #

@@ -1020,8 +1020,20 @@ def _current_tick() -> str:
     bucket (rather than a raw O_CREAT|O_EXCL file) is what makes the dedup
     durable: a finished invocation's lock-release no longer lets a re-fire in
     the same interval re-acquire -- the interval owns the lock until it changes.
+
+    BOUNDARY ALIGNMENT (issue #73): the bucket boundary is shifted half an
+    interval (`TICK_INTERVAL_SECONDS // 2`) FORWARD. The cron fires on `*/20`
+    at wall-clock `:00`/`:20`/`:40`; a naive `int(time.time()) // 1200` puts
+    the bucket boundary at exactly those instants (whole-hour timezone offset
+    makes the epoch boundary coincide with the fire time). A doubled fire that
+    straddles the boundary then computes DIFFERENT buckets and the second
+    process reclaims the first as a 'finished prior interval' -> both run
+    main(). Shifting the boundary half an interval moves it to `:10`/`:30`/
+    `:50`, 10 minutes from every fire, so a same-slot double fire always lands
+    in ONE bucket and dedups. A genuinely-new slot still maps to a distinct
+    bucket and reclaims the previous one.
     """
-    return f"tick-{int(time.time()) // TICK_INTERVAL_SECONDS}"
+    return f"tick-{(int(time.time()) + TICK_INTERVAL_SECONDS // 2) // TICK_INTERVAL_SECONDS}"
 
 
 def _read_lock_owner() -> tuple[str, int]:
