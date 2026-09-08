@@ -340,6 +340,48 @@ The dispatcher reads this at startup and launches each worker with
 `hermes chat ... -m <MODEL> --provider <PROVIDER>`. Change the file (or the env vars)
 and the next cron tick picks it up.
 
+### Installing / uninstalling the watch loop (macOS + Linux)
+
+The watch loop runs as a host crontab entry (`*/20 * * * *`). Two `make` targets
+install and uninstall it idempotently (guarding against duplicates and preserving
+your other crontab lines):
+
+```bash
+make cron-install      # add the */20 watch-loop entry (idempotent; no-op if already present)
+make cron-uninstall    # remove ONLY the watch-loop entry (keeps unrelated lines)
+make cron-snapshot     # (via scripts/install_watchloop_cron.py snapshot) preview the entry
+```
+
+**Prerequisites before installing:**
+1. `make install` (so the launcher, venv, and `~/bin` symlinks exist).
+2. (Workers that drive issues need GitHub push access) a working token in `.env`
+   (gitignored) — the dispatcher reads `GITHUB_TOKEN` from it at runtime. Never
+   commit the token.
+3. `python3` on PATH (macOS: the helper falls back to `/opt/homebrew/bin/python3`
+   if present; Linux: plain `python3`).
+
+**What the entry does** — every 20 min it launches `scripts/watchloop_dispatch.py`
+as a `project-manager` Hermes session (`cwd = this repo`, so `AGENTS.md` loads as
+its rulebook) that polls PRs/CI, merges ready PRs, and drives every open issue to
+a PR. See the "Self-driving development" section above.
+
+**First-tick smoke check** after `make cron-install`:
+```bash
+crontab -l | grep watchloop_dispatch      # entry present
+# wait up to 20 min, then confirm the loop ran:
+tail .watchloop/run/dispatch.log          # should show a `tick start` line + activity
+```
+
+**Per-OS notes:**
+- macOS: cron uses a minimal PATH; the entry prefixes
+  `/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin`. If you use a
+  custom python, `make cron-install PYTHON=/path/to/python3`.
+- Linux (systemd-cron / vixie-cron): the same cron syntax applies; the entry uses
+  plain `python3` from your cron PATH. If `cron` isn't running: `sudo systemctl
+  enable --now cron` / `sudo service cron start`.
+
+**To remove the loop entirely:** `make cron-uninstall`.
+
 ---
 
 ## Layout
