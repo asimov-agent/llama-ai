@@ -30,7 +30,7 @@
       real path so the containerized `make lint`'s `git ls-files` resolves and
       scans every tracked file; a normal CI checkout keeps the mount empty →
       byte-identical). No competing lint mechanism added here.
-- [ ] 9. Verify: `make lint`, `make test-unit`, `make test-top-tier-ci`,
+- [x] 9. Verify: `make lint`, `make test-unit`, `make test-top-tier-ci`,
       `make openspec-validate NAME=feat-top-tier-download-top-tier-family-keyword-top` all
       GREEN via the serialized-make lock; commit + push; open PR against `main` referencing
       issue #61.
