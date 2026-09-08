@@ -129,10 +129,10 @@ def collect_dispatch_timeline(window: int = 60) -> list[dict]:
             kind = "tick-start"
         elif "tick done" in body:
             kind = "tick-done"
-        elif "spawning worker" in body:
-            kind = "spawn"
         elif body.startswith("repair-PR"):
             kind = "repair"
+        elif "spawning worker" in body:
+            kind = "spawn"
         elif body.startswith("[clean]"):
             kind = "clean"
         elif re.match(r"PR#\d+: not approved", body):

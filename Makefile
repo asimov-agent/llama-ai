@@ -162,7 +162,7 @@ test-clean: ## Remove left-over/stopped orphaned containers of the test image (i
 	echo "Pruned stopped orphaned $(TEST_IMG) containers."
 
 test-unit: ## Hermetic unit tests (containerized) — includes the lint regression + openspec-tasks-check tests
-	$(TEST_RUN) python -m pytest tests/test_llama_ai.py tests/test_hf_download_stall.py tests/test_lint_linefeeds.py tests/test_watchloop_dispatch.py tests/test_check_openspec_tasks.py tests/test_install_watchloop_cron.py -p no:cacheprovider -q
+	$(TEST_RUN) python -m pytest tests/test_llama_ai.py tests/test_hf_download_stall.py tests/test_lint_linefeeds.py tests/test_watchloop_dispatch.py tests/test_check_openspec_tasks.py tests/test_install_watchloop_cron.py tests/test_watch_report.py -p no:cacheprovider -q
 
 test-agents-e2e: ## REAL end-to-end agent tests (containerized) — runs ONLY *_e2e*.py files directly
 	# issue #63 CI gate: exercises the REAL dispatcher spawn/kill/respawn against a fake
@@ -285,10 +285,14 @@ cron-uninstall: ## Remove ONLY the watch-loop host crontab entry (preserves unre
 cron-snapshot: ## Preview the watch-loop crontab entry (no changes)
 	@python3 scripts/install_watchloop_cron.py snapshot
 
+watch-report: ## Human-readable watch-loop status report (host-side, reads .watchloop logs + live gh state; WINDOW=N sets dispatch-log window)
+	@python3 scripts/watch_report.py $(if $(WINDOW),--window $(WINDOW),)
+
 help:
 	@echo "Targets:" \
 		"install (venv+launcher+symlink+smoke), venv-install, link, smoke,"
 	@echo "         test-unit, test-agents-e2e (real agent e2e), test-install, test-health (endpoint answers 'hi'), test,"
 	@echo "         download-test-model, openspec-validate, openspec-new/status,"
 	@echo "         loop (chained runner), loop-harness, chained, uninstall,"
-	@echo "         cron-install, cron-uninstall, cron-snapshot (watch-loop host crontab)"
+	@echo "         cron-install, cron-uninstall, cron-snapshot (watch-loop host crontab),"
+	@echo "         watch-report (human-readable watch-loop status report)"

@@ -380,6 +380,33 @@ crontab -l | grep watchloop_dispatch      # entry present
 tail .watchloop/run/dispatch.log          # should show a `tick start` line + activity
 ```
 
+### Observing the watch loop (`make watch-report`)
+
+To see whether the cron agents are actually working, run the on-demand status
+report (host-side, reads the repo's own `.watchloop` logs + live GitHub state):
+
+```bash
+make watch-report            # default: last 60 dispatch.log lines
+make watch-report WINDOW=200 # wider dispatcher window
+```
+
+It answers three questions:
+
+1. **What work did the cron agents do?** — each worker session found in
+   `.watchloop/logs` is listed with its issue, PR, branch, heartbeat count, and
+   a "what this tick did" snippet when the log carries a `STATUS: DONE` /
+   `WATCH-LOOP SUMMARY` block. Live workers (heartbeat within the last 40 min)
+   are shown separately from STALE/DONE logs, so a leftover log from a finished
+   branch is never mistaken for an active worker.
+2. **What is the output rate?** — live open issues + open PRs with each PR's
+   merge-state, review decision, and compact CI verdict; plus the dispatcher
+   timeline (spawn / repair / merge-wait / clean / tick counts in the window)
+   and a tick-start-vs-tick-done balance check that flags a possible doubled or
+   incomplete run.
+3. **How does it react to red CI?** — repair-stage action count in the window
+   plus any open PR currently showing failing CI (the PRs the repair stage is
+   expected to fix).
+
 **Per-OS notes:**
 - macOS: cron uses a minimal PATH; the entry prefixes
   `/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin`. If you use a
