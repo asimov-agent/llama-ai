@@ -494,7 +494,10 @@ def test_family_real_known_lowend_one_provider(tmp_path):
     assert family_repos, "live qwen family search returned NO repos — HF unreachable or family vanished"
 
     # When we scan the family for the smallest qualifying low-end file
-    # (single-file .gguf, no shards/projectors/MTP, a q2..q8 quant name, <= 2 GB)
+    # (single-file .gguf, no shards/projectors/MTP — a shard named
+    # `<N>-<Q>-<i>of-<T>.gguf` or an `...-of-<T>.gguf` shard, or a fragment
+    # under 200 MB (a shard piece, not a whole model) is not a single file —
+    # a q2..q8 quant name, <= 2 GB)
     best = None  # (size_bytes, repo, path)
     for r in family_repos:
         repo = r["repo"]
@@ -506,12 +509,13 @@ def test_family_real_known_lowend_one_provider(tmp_path):
             fn = os.path.basename(f["path"])
             if not fn.lower().endswith(".gguf"):
                 continue
-            if ("-multi-of-" in fn or "-00001-of-" in fn or "0000" in fn
+            if (re.search(r"-multi-of-|-\d+of\d+|of-\d+", fn)
                     or fn.startswith(("mmproj", "Qwen_VL"))
-                    or "mtp-" in fn.lower()):
+                    or "mtp-" in fn.lower()
+                    or f["size_bytes"] < 200 * 1024 * 1024):
                 continue  # sharded / projector / MTP companion: not a single file
-            if not re.search(r"(?i)(q[2-8]_)", fn):
-                continue  # must be a q2..q8 quant (not fp16/bf16/IQ1)
+            if not re.search(r"(?i)(?<!i)(?<![a-z0-9])q[2-8]_", fn):
+                continue  # must be a plain q2..q8 quant (not fp16/bf16/IQ1-IQ4)
             if f["size_bytes"] > _2:
                 continue  # low-end: <= 2 GB
             if best is None or f["size_bytes"] < best[0]:

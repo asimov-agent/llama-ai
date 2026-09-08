@@ -38,6 +38,16 @@ SAME `discover_top_tier` → probe → placement → `hf`-CLI download pipeline.
    - 0 matching repos → clear message `no GGUF repos found for family '<kw>'` + exit 1;
    - fewer providers than `--count` → download what exists, honest `downloaded N/M`
      report (same contract as today).
+6. **Worktree lint (relies on main's fix, no new code):** the containerized
+   `make lint` used to silently report "LINT OK" without scanning a single file
+   inside a git **worktree** (the background-watch-loop case). Root cause: a
+   worktree's `.git` is a *pointer file* to the parent repo's
+   `.git/worktrees/<name>`, which wasn't mounted, so `git ls-files` failed with
+   exit 128 and the lint's empty-file-list path passed. That root-cause fix is
+   already on `main` (Makefile: detect a worktree — `.git` is a file — and mount
+   the parent repo at its real path so `git` resolves inside the container; a
+   normal CI checkout has `.git` as a dir so the mount is empty → byte-identical).
+   This change **inherits** that fix; it adds no competing lint mechanism.
 
 ## What does NOT change
 - `--download-top-tier` **without** `--family` behaves byte-identically to today — all

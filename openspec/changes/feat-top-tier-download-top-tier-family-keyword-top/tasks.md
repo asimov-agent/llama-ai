@@ -25,7 +25,12 @@
       size tolerance, GGUF metadata verification, idempotent repeat; loud failure if empty).
 - [ ] 7. README: add a `--family` subsection to the `--download-top-tier` section (flag +
       low-end/1-provider dry and real examples + word-boundary note + degenerate behavior).
-- [ ] 8. Verify: `make lint`, `make test-unit`, `make test-top-tier-ci`,
+- [ ] 8. Worktree lint: rely on the root-cause fix already on `main` (Makefile
+      detects a worktree — `.git` is a file — and mounts the parent repo at its
+      real path so the containerized `make lint`'s `git ls-files` resolves and
+      scans every tracked file; a normal CI checkout keeps the mount empty →
+      byte-identical). No competing lint mechanism added here.
+- [ ] 9. Verify: `make lint`, `make test-unit`, `make test-top-tier-ci`,
       `make openspec-validate NAME=feat-top-tier-download-top-tier-family-keyword-top` all
       GREEN via the serialized-make lock; commit + push; open PR against `main` referencing
       issue #61.
