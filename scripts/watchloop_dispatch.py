@@ -48,6 +48,7 @@ burning a doomed worker. Hosted providers (e.g. openrouter) are never probed.
 No worker time limit => a big issue may span ticks and resume from its own log.
 """
 
+import fcntl
 import json
 import os
 import re
@@ -956,6 +957,61 @@ TICK_LOCK = f"{RUN}/dispatch.tick.lock"
 # bucket changes) is what makes "exactly one main() per cron tick" durable.
 TICK_INTERVAL_SECONDS = 20 * 60
 
+# The read -> decide -> write of TICK_LOCK MUST be one mutually-exclusive step
+# (issue #62). The old reclaim path did `os.remove(TICK_LOCK)` followed by
+# `os.open(TICK_LOCK, O_CREAT|O_EXCL)`, which is NOT atomic: a double cron-fire
+# could let P2 remove the lock P1 JUST created, so BOTH processes ran main().
+# We therefore take a SHORT-LIVED advisory flock on this separate meta-lock
+# file around the whole decision. The meta-lock is released immediately after
+# the write -- it is NOT the durable lock. The durable dedup remains the bucket
+# recorded INSIDE TICK_LOCK (issues #27/#30), which a same-bucket re-fire reads
+# and dedups on even after the meta-lock is free and the winner has exited.
+TICK_LOCK_META = f"{RUN}/dispatch.tick.lock.meta"
+
+# Bounded retries for the meta-lock decision. The critical section is a
+# few-syscall read/write (microseconds), so a handful of immediate retries
+# covers the normal case where a sibling recoverer is mid-decision.
+META_LOCK_ATTEMPTS = 8
+
+
+def _tick_meta_path() -> str:
+    """Resolve the meta-lock path from the CURRENT TICK_LOCK value.
+
+    Deriving it at call time (rather than reading the module-level
+    `TICK_LOCK_META` constant, which is fixed at import from `RUN`) keeps the
+    meta-lock file colocated with whatever lock file `TICK_LOCK` points at --
+    so tests that monkeypatch `TICK_LOCK` onto a tmp dir automatically keep the
+    meta-lock there too (fully hermetic, never touches the real `.watchloop/run`).
+    """
+    return TICK_LOCK + ".meta"
+
+
+def _tick_meta_lock():
+    """SHORT-LIVED advisory lock that makes the tick decision atomic (#62).
+
+    Returns an open fd exclusively `flock`-ed on `_tick_meta_path()`, or None if
+    the meta-lock could not be taken within the bounded retry budget. The fd
+    must be closed by the caller (which releases the flock); the file itself is
+    deliberately kept (unlinking the flock target would break mutual
+    exclusion for a sibling holding the inode).
+
+    The meta-lock is NOT the durable dedup lock -- it only serializes the
+    read -> decide -> write of TICK_LOCK. The durable dedup remains the bucket
+    recorded inside TICK_LOCK (issues #27/#30).
+    """
+    fd = os.open(_tick_meta_path(), os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        for _ in range(META_LOCK_ATTEMPTS):
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return fd
+            except OSError:
+                continue  # a sibling is mid-decision; retry the bounded budget
+    except BaseException:
+        os.close(fd)
+        raise
+    return None  # budget exhausted -> caller must SKIP (dedup), never run
+
 
 def _current_tick() -> str:
     """Coarse cron-interval bucket for the current wall-clock moment.
@@ -992,43 +1048,68 @@ def _tick_lock_acquire() -> bool:
     dedups EVEN IF the first invocation already finished. The lock is only
     released when a NEW interval (bucket) starts.
 
+    ATOMICITY (issue #62): the ENTIRE read -> decide -> write of TICK_LOCK runs
+    under a short-lived advisory meta-lock (TICK_LOCK_META, issues #27/#30 keep
+    the durable bucket INSIDE TICK_LOCK). The old code did `os.remove(TICK_LOCK)`
+    followed by `os.open(TICK_LOCK, O_CREAT|O_EXCL)`, which is NOT atomic: a
+    double cron-fire could let a second process remove the lock the first JUST
+    created (same path!) so BOTH ran main(). The meta-lock serializes the whole
+    decision so at most one caller wins per interval. The meta-lock is released
+    immediately after the write -- it is NOT the durable lock.
+
     Returns True if THIS tick should run:
       * fresh lock (no owner) -> win, write our bucket+PID
-      * owner holds THIS bucket AND live -> dedup (return False, no tick start)
       * owner holds an OLDER bucket (finished previous interval) -> reclaim
-      * owner stale/foreign -> remove + recreate atomically
+      * owner holds THIS bucket -> dedup (return False, no tick start),
+        REGARDLESS of whether that owner is still alive (a FINISHED/CRASHED
+        same-bucket owner must NOT be reclaimed -- that is the #25/#30 invariant)
+    There is NO fallback: if the meta-lock cannot be taken the tick is SKIPPED
+    (dedup), never double-run.
     """
-    bucket = _current_tick()
-
-    # Reclaim a finished previous interval: an older-bucket lock is stale for
-    # THIS tick, so clear it before the atomic create.
-    old_bucket, old_pid = _read_lock_owner()
-    if old_bucket and old_bucket != bucket and pid_alive(old_pid):
-        log(f"  [DEDUP] reclaiming finished interval {old_bucket} for {bucket}")
-
-    fd = None
+    # The read -> decide -> write MUST be one mutually-exclusive step (#62).
+    # If we cannot take the meta-lock, SKIP (dedup) -- never run a second tick.
+    meta_fd = _tick_meta_lock()
+    if meta_fd is None:
+        log("  [DEDUP] could not take the atomic tick decision; skipping this tick")
+        return False
     try:
-        fd = os.open(TICK_LOCK, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except OSError:
-        # Lock exists. If the recorded owner holds THIS interval's bucket, dedup
-        # REGARDLESS of whether that owner is still alive. The interval owns the
-        # lock until its bucket changes, so even a FINISHED or CRASHED same-bucket
-        # owner must keep this tick duplicable -- reclaiming it would let a
-        # same-bucket re-fire re-run the tick (the #25 phantom double). Only an
-        # OLDER bucket (a finished prior interval) is stale for this tick.
-        owner_bucket, _owner_pid = _read_lock_owner()
-        if owner_bucket and owner_bucket == bucket:
-            return False  # THIS interval already ran/s owned -> dedup, no tick start
-        # Stale/foreign lock (different bucket, or no bucket): remove + recreate.
+        bucket = _current_tick()
+
+        # Reclaim a finished previous interval: an older-bucket lock is stale
+        # for THIS tick, so clear it before the atomic create.
+        old_bucket, old_pid = _read_lock_owner()
+        if old_bucket and old_bucket != bucket and pid_alive(old_pid):
+            log(f"  [DEDUP] reclaiming finished interval {old_bucket} for {bucket}")
+
+        # Fresh lock: no owner yet -> win by creating it (O_EXCL).
         try:
-            os.remove(TICK_LOCK)
             fd = os.open(TICK_LOCK, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except OSError:
-            return False  # raced with another recoverer
-
-    os.write(fd, f"{bucket}\n{os.getpid()}\n".encode())
-    os.close(fd)
-    return True
+            # Lock exists. If the recorded owner holds THIS interval's bucket,
+            # dedup REGARDLESS of whether that owner is still alive. The interval
+            # owns the lock until its bucket changes, so even a FINISHED or
+            # CRASHED same-bucket owner must keep this tick duplicable --
+            # reclaiming it would let a same-bucket re-fire re-run the tick
+            # (the #25/#30 phantom double). Only an OLDER bucket (a finished
+            # prior interval) is stale for this tick.
+            owner_bucket, _owner_pid = _read_lock_owner()
+            if owner_bucket and owner_bucket == bucket:
+                return False  # THIS interval already ran/was owned -> dedup, no tick start
+            # Stale/foreign lock (different bucket, or no bucket): remove + recreate.
+            # Both run UNDER the meta-lock, so no sibling can remove our fresh
+            # lock between the remove and the create (the #62 TOCTOU).
+            try:
+                os.remove(TICK_LOCK)
+                fd = os.open(TICK_LOCK, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except OSError:
+                return False  # raced with another recoverer
+        os.write(fd, f"{bucket}\n{os.getpid()}\n".encode())
+        os.close(fd)
+        return True
+    finally:
+        # Release the SHORT-LIVED meta-lock (the durable dedup stays in
+        # TICK_LOCK's recorded bucket -- issues #27/#30).
+        os.close(meta_fd)
 
 
 def _tick_lock_release(current_bucket: str) -> None:
