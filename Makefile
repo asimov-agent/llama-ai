@@ -34,7 +34,7 @@ LLAMA_SERVER_BIN ?= $(HOME)/repository/git/llama.cpp/build/bin/llama-server
 .PHONY: all install venv-install link uninstall smoke list version help \\
 		openspec-image openspec-new openspec-validate openspec-status openspec-shell \\
 		test test-unit test-agents-e2e test-install test-install-ci test-install-host test-health download-test-model \\
-		test-image test-clean lint lint-fix loop loop-harness chained
+		test-image test-clean lint lint-fix loop loop-harness chained cron-install cron-uninstall cron-snapshot
 
 # ---- container runtime (nerdctl preferred, docker fallback) --------------
 RUNTIME ?= nerdctl
@@ -153,7 +153,7 @@ test-clean: ## Remove left-over/stopped orphaned containers of the test image (i
 	echo "Pruned stopped orphaned $(TEST_IMG) containers."
 
 test-unit: ## Hermetic unit tests (containerized) — includes the lint regression + openspec-tasks-check tests
-	$(TEST_RUN) python -m pytest tests/test_llama_ai.py tests/test_hf_download_stall.py tests/test_lint_linefeeds.py tests/test_watchloop_dispatch.py tests/test_check_openspec_tasks.py -p no:cacheprovider -q
+	$(TEST_RUN) python -m pytest tests/test_llama_ai.py tests/test_hf_download_stall.py tests/test_lint_linefeeds.py tests/test_watchloop_dispatch.py tests/test_check_openspec_tasks.py tests/test_install_watchloop_cron.py -p no:cacheprovider -q
 
 test-agents-e2e: ## REAL end-to-end agent tests (containerized) — runs ONLY *_e2e*.py files directly
 	# issue #63 CI gate: exercises the REAL dispatcher spawn/kill/respawn against a fake
@@ -263,9 +263,23 @@ uninstall: ## Remove ONLY the launcher + symlinks in ~/bin (leaves the venv AND 
 	@echo "Removed $(LAUNCHER), $(BIN)/llama_ai.py, and $(BIN)/llama-server"
 	@echo "(venv kept at $(VENV) and repo source untouched; 'make -C tools clean' to drop requirements.txt)"
 
+# ---- watch-loop host crontab install/uninstall (issue #65) ----------------
+# The self-driving loop (scripts/watchloop_dispatch.py) needs a `*/20 * * * *`
+# host crontab entry. These targets install/uninstall it idempotently, preserving
+# unrelated crontab lines, via scripts/install_watchloop_cron.py (per-OS python).
+cron-install: ## Install the */20 watch-loop host crontab entry (idempotent, preserves unrelated lines)
+	@python3 scripts/install_watchloop_cron.py install $(if $(PYTHON),--python $(PYTHON),)
+
+cron-uninstall: ## Remove ONLY the watch-loop host crontab entry (preserves unrelated lines)
+	@python3 scripts/install_watchloop_cron.py uninstall
+
+cron-snapshot: ## Preview the watch-loop crontab entry (no changes)
+	@python3 scripts/install_watchloop_cron.py snapshot
+
 help:
 	@echo "Targets:" \
 		"install (venv+launcher+symlink+smoke), venv-install, link, smoke,"
 	@echo "         test-unit, test-agents-e2e (real agent e2e), test-install, test-health (endpoint answers 'hi'), test,"
 	@echo "         download-test-model, openspec-validate, openspec-new/status,"
-	@echo "         loop (chained runner), loop-harness, chained, uninstall"
+	@echo "         loop (chained runner), loop-harness, chained, uninstall,"
+	@echo "         cron-install, cron-uninstall, cron-snapshot (watch-loop host crontab)"
