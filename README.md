@@ -215,6 +215,52 @@ the next fitting provider**, so the requested `--count × --per-provider` total 
 when some trending repos are unreachable — no more silent "8 of the intended 10". The final
 report shows `downloaded N/M (+S skipped: access-denied, dead)`.
 
+### Scope to ONE model family (`--download-top-tier --family <keyword>`)
+
+`--family <keyword>` narrows the same top-tier pipeline to the **top `--count`
+providers (HF owners) of ONE model family** (e.g. `qwen`, `ornith`) — each with
+its HIGH (Q8) + LOWER (Q4/Q5/Q6) quant — instead of trending across *all*
+families. A niche family has 0–2 repos in the global trending window, so this
+queries the **complete** family for the keyword rather than the trending slice.
+
+```bash
+# top 5 providers of the qwen family, each with high + lower quants
+llama-ai --download-top-tier --family qwen
+# top 1 provider of the ornith family, just the high quant
+llama-ai --download-top-tier --family ornith --count 1 --per-provider 1
+# preview a known low-end family, 1 provider, without downloading (small card)
+LLAMA_RAM_BYTES=$((8*1024**3)) llama-ai --download-top-tier --family qwen --count 1 --dry
+```
+
+Everything else (`--count`, `--per-provider`, `--dry`, placement, probe+refill,
+`hf` download) works exactly as the trending path — family mode is a *filter*
+fed into the **same** pipeline, not a second implementation:
+
+- **Word-boundary match, not substring.** `--family qwen` matches
+  `unsloth/Qwen3.8-27B-GGUF` / `Qwen/Qwen2.5-0.5B-Instruct-GGUF` (the keyword may
+  be followed by a version digit, e.g. `qwen2`/`qwen3`) but **never** a different
+  family that merely starts with the same letters — `Jackrong/Qwopus…`,
+  `empero-ai/Qwythos…`.
+- **`--min-trending-score` is ignored in family mode** (a score floor would filter
+  a niche family out entirely — most family repos report trendingScore 0). Family
+  providers are ranked trendingScore desc with a **downloads desc tie-break**.
+- **Degenerate families fail loudly, never silently:** a keyword with **zero**
+  matching GGUF repos prints `no GGUF repos found for family '<kw>'` and exits
+  non-zero (typo / non-GGUF family); **fewer** providers than `--count` downloads
+  what exists and reports honestly (`downloaded N/M`).
+- **Transient HF API errors are retried** (this applies to the whole top-tier
+  pipeline, trending *and* family). Family mode fans out one HF API call per repo
+  tree (hundreds), so the pipeline retries rate-limits / server blips
+  (HTTP 429/500/502/503/504 and plain network / socket-timeout errors) with
+  bounded exponential backoff that honours `Retry-After`; a **permanent** error
+  (401/403/404) is never retried — it fails fast so a genuinely gated/dead repo is
+  still reported loudly (the skip+refill and "no repos" paths above). Without this
+  retry, a single 429 on one repo tree would silently drop that repo and turn a
+  valid match into a false "no model fits".
+
+Without `--family` the command behaves byte-identically to before (all existing
+top-tier tests pass unmodified).
+
 ---
 
 ## Verification, loop & CI (containerized — same everywhere)
